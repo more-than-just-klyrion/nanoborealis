@@ -10,6 +10,9 @@ if [ ! -e "$state/.nanobot-os-seeded" ]; then
     cp -R /opt/nanobot-seed/. "$state/"
     touch "$state/.nanobot-os-seeded"
 fi
+# Skills added in later NanoAurora releases reach existing agents; ones the agent edited are left alone.
+mkdir -p "$state/workspace/skills"
+cp -Rn /opt/nanobot-seed/workspace/skills/. "$state/workspace/skills/" 2>/dev/null || true
 
 pkgs="$HOME/.config/nanoaurora/apt-packages"
 if [ -s "$pkgs" ]; then

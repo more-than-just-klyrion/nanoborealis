@@ -28,6 +28,22 @@
       "maxTokens": 8192,
       "contextWindowTokens": 262144,
       "temperature": 0.2
+    },
+
+    "qwen": {
+      "provider": "openrouter",
+      "model": "qwen/qwen3.8-27b:free",
+      "maxTokens": 8192,
+      "contextWindowTokens": 262144,
+      "temperature": 0.2
+    },
+
+    "inkling": {
+      "provider": "openrouter",
+      "model": "thinkingmachines/inkling:free",
+      "maxTokens": 8192,
+      "contextWindowTokens": 262144,
+      "temperature": 0.2
     }
   },
 
@@ -35,6 +51,12 @@
     "defaults": {
       "modelPreset": "ultra",
       "fallbackModels": ["super", "lightning"]
+    }
+  },
+
+  "tools": {
+    "exec": {
+      "timeout": 600
     }
   },
 
