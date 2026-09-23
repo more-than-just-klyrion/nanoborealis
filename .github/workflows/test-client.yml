@@ -1,0 +1,60 @@
+---
+name: Test client
+
+# Runs the client's protocol checks against a real nanobot gateway, at the version the
+# agent image pins, with a stand-in model, so a protocol change breaks here first.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'client/**'
+      - 'system_files/usr/share/nanobot-os/image/Containerfile'
+      - '.github/workflows/test-client.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'client/**'
+  workflow_dispatch:
+
+jobs:
+  protocol:
+    name: Client against a real nanobot gateway
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install nanobot at the image's version, and the client's dependencies
+        run: |
+          version="$(sed -n 's/^ARG NANOBOT_VERSION=//p' system_files/usr/share/nanobot-os/image/Containerfile)"
+          echo "nanobot $version"
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "nanobot-ai==$version" "websockets>=13" "flet==1.0.1"
+
+      - name: Start the stand-in model and a gateway
+        working-directory: client
+        run: |
+          nohup "$RUNNER_TEMP/venv/bin/python" dev/stub_llm.py 18080 > "$RUNNER_TEMP/stub.log" 2>&1 &
+          nohup "$RUNNER_TEMP/venv/bin/nanobot" gateway --foreground --config dev/gateway-config.json > "$RUNNER_TEMP/gateway.log" 2>&1 &
+          for i in $(seq 1 90); do
+            curl -sf http://127.0.0.1:18791/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf -o /dev/null http://127.0.0.1:18791/health
+
+      - name: Protocol checks
+        run: '"$RUNNER_TEMP/venv/bin/python" client/dev/smoke.py http://127.0.0.1:18765 test-password'
+
+      - name: The UI module loads
+        working-directory: client/src
+        run: '"$RUNNER_TEMP/venv/bin/python" -c "import main; print(\"ok\")"'
+
+      - name: Gateway log
+        if: always()
+        run: |
+          tail -n 80 "$RUNNER_TEMP/gateway.log" || true
+          tail -n 20 "$RUNNER_TEMP/stub.log" || true

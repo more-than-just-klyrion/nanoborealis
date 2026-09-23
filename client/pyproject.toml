@@ -1,0 +1,23 @@
+[project]
+name = "nanoaurora-client"
+version = "0.1.0"
+description = "Chat with your NanoAurora agent from any device"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "flet==1.0.1",
+  "websockets>=13",
+]
+
+[project.optional-dependencies]
+# The desktop runtime; `flet build` bundles its own, so packaged apps don't need it.
+desktop = ["flet-desktop==1.0.1"]
+
+[tool.flet]
+org = "io.github.more-than-just-klyrion"
+product = "NanoAurora"
+company = "NanoAurora"
+copyright = "NanoAurora contributors"
+
+[tool.flet.app]
+path = "src"
