@@ -20,19 +20,15 @@ jobs:
   exo:
     name: exo ${{ matrix.variant }} on CPU, driving the agent
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          # The last release, as shipped: PyPI mlx and mlx-cpu 0.31.1.
-          - variant: release
-            ref: v1.0.71
-            extra: cpu
-            mlx_override: ""
           # The latest source ships a custom mlx build with no CPU library; swap in a matching PyPI pair.
+          # (v1.0.71 is out: its runner calls new_thread_local_stream, which only exo's mlx fork has.)
           - variant: main
             ref: main
             extra: mlx-cpu
@@ -175,9 +171,10 @@ jobs:
                                          "tokenIssueSecret": "test-password", "websocketRequiresToken": True}},
           }, open(sys.argv[1], "w"), indent=2)
           EOF
-          nohup "$RUNNER_TEMP/nb/bin/nanobot" gateway --foreground --config "$RUNNER_TEMP/gw/config.json" > "$RUNNER_TEMP/gateway.log" 2>&1 &
+          # A CPU runner reads the agent's long prompt slower than nanobot's default 90 s stream-idle limit.
+          NANOBOT_STREAM_IDLE_TIMEOUT_S=1800 nohup "$RUNNER_TEMP/nb/bin/nanobot" gateway --foreground             --config "$RUNNER_TEMP/gw/config.json" > "$RUNNER_TEMP/gateway.log" 2>&1 &
           for i in $(seq 1 90); do curl -sf http://127.0.0.1:18791/health >/dev/null && break; sleep 1; done
-          "$RUNNER_TEMP/nb/bin/python" client/dev/agent_check.py http://127.0.0.1:18765 test-password 1800
+          "$RUNNER_TEMP/nb/bin/python" client/dev/agent_check.py http://127.0.0.1:18765 test-password 3600
 
       - name: Logs
         if: always()
