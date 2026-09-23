@@ -47,12 +47,17 @@ jobs:
           git -C "$RUNNER_TEMP/exo" log -1 --format='exo %h (%cd)'
           cd "$RUNNER_TEMP/exo/dashboard" && npm install --no-audit --no-fund --loglevel=error && npm run build
           cd "$RUNNER_TEMP/exo" && uv sync --extra mlx-cpu
+          # exo pins mlx 0.32.0 but mlx-cpu 0.31.2, whose native library lacks symbols the 0.32 bindings
+          # import (the runner dies with "undefined symbol"). Match them; `uv run --no-sync` keeps it.
+          mlx="$(.venv/bin/python -c 'import importlib.metadata as m; print(m.version("mlx"))')"
+          uv pip install --python .venv/bin/python "mlx-cpu==$mlx"
+          .venv/bin/python -c 'import mlx.core as mx; print("mlx works:", mx.__version__, mx.array([1, 2]).sum().item())'
           df -h / | tail -1
 
       - name: Start a node
         run: |
           cd "$RUNNER_TEMP/exo"
-          nohup uv run exo > "$RUNNER_TEMP/exo.log" 2>&1 &
+          nohup uv run --no-sync exo > "$RUNNER_TEMP/exo.log" 2>&1 &
           for i in $(seq 1 180); do
             curl -sf "$EXO/v1/models" -o "$RUNNER_TEMP/models.json" && break
             sleep 2
