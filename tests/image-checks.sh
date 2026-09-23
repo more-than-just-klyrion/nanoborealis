@@ -20,7 +20,7 @@ expect() {  # description, command...
 expect "nanoborealis command" test -x /usr/bin/nanoborealis
 expect "earlier command names still work" test -x /usr/bin/nanoaurora -a -x /usr/bin/nanobot-os
 for f in /usr/libexec/nanoborealis-firewall /usr/libexec/nanoborealis-migrate /usr/libexec/nanoborealis-firstrun \
-         /usr/libexec/nanoborealis-setup-from-stick /usr/share/nanoborealis/install.sh \
+         /usr/libexec/nanoborealis-setup-from-stick /usr/libexec/nanoborealis-relay /usr/share/nanoborealis/install.sh \
          /usr/share/nanoborealis/nanoborealis /usr/share/nanoborealis/image/entrypoint.sh; do
     expect "$f is executable" test -x "$f"
 done
@@ -32,6 +32,12 @@ expect "setup-from-stick compiles" python3 -c 'import ast, sys; ast.parse(open(s
     /usr/libexec/nanoborealis-setup-from-stick
 expect "compute-config compiles" python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' \
     /usr/share/nanoborealis/compute-config.py
+for f in /usr/libexec/nanoborealis-relay /usr/share/nanoborealis/pool.py; do
+    expect "$f compiles" python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$f"
+done
+expect "pool node service template" grep -q '^Image=ghcr.io/more-than-just-klyrion/nanoborealis-pool:' \
+    /usr/share/nanoborealis/exo.container
+expect "pool relay service installed" test -f /usr/lib/systemd/system/nanoborealis-pool-relay.service
 
 # Services and update policy.
 expect "network guard enabled" systemctl is-enabled nanoborealis-firewall.service

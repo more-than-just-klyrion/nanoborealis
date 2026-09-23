@@ -25,6 +25,8 @@ Usage: $(basename "$0") <command>
   password          show the WebUI password
   remote on|off     let other devices on your network use the agent (NanoBorealis client, browser)
   compute ...       run the agent on models hosted by your other devices: add, remove, use, list
+  pool ...          pool this computer with others on your network to run models none could alone:
+                    join [--private NAME], serve MODEL, stop MODEL, status, logs, leave
   set-key           replace the OpenRouter API key
   rebuild [X.Y.Z]   rebuild the image (optionally at a new nanobot version) and restart
   reset             DELETE the agent's home: memory, sessions, skills, settings, its tools
@@ -37,6 +39,33 @@ tracked_image() {
     { sudo bootc status --format=json 2>/dev/null || sudo bootc status --json 2>/dev/null; } \
         | python3 -c 'import json, sys; print(((json.load(sys.stdin).get("spec") or {}).get("image") or {}).get("image", ""))' \
           2>/dev/null || true
+}
+
+agent_installed() { id "$AGENT_USER" >/dev/null 2>&1; }
+if agent_installed; then
+    AGENT_UID="$(id -u "$AGENT_USER")"
+    AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
+fi
+
+as_agent() {
+    ( cd / && sudo -u "$AGENT_USER" env \
+        HOME="$AGENT_HOME" \
+        XDG_RUNTIME_DIR="/run/user/$AGENT_UID" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$AGENT_UID/bus" \
+        "$@" )
+}
+agentctl() { sudo systemctl --user -M "$AGENT_USER@" "$@"; }
+# Edits the agent's model settings from inside its container, so the file keeps its owner.
+in_agent() { as_agent podman exec -i nanobot python3 - "$@" < /usr/share/nanoborealis/compute-config.py; }
+
+# Models on your own machines can take minutes to read the agent's long prompt before the first
+# word comes back; nanobot would give up after 90 seconds of silence.
+agent_patience() {
+    local quadlet="$AGENT_HOME/.config/containers/systemd/nanobot.container"
+    sudo grep -q '^Environment=NANOBOT_STREAM_IDLE_TIMEOUT_S=' "$quadlet" 2>/dev/null && return 0
+    sudo sed -i '/^\[Container\]/a Environment=NANOBOT_STREAM_IDLE_TIMEOUT_S=1800' "$quadlet"
+    agentctl daemon-reload
+    agentctl restart nanobot.service
 }
 
 cmd="${1:-help}"
@@ -87,20 +116,151 @@ case "$cmd" in
     version)
         sudo bootc status
         exit 0 ;;
+    pool)
+        # A pool is exo nodes on one network lending each other memory, so together they run
+        # models too big for any one of them. Any computer can join, with or without the agent;
+        # the node runs as its own account, like the agent does.
+        POOL_USER="nanoborealis-pool"
+        POOL_IMAGE="ghcr.io/more-than-just-klyrion/nanoborealis-pool:cpu"
+        me="$(basename "$0")"
+        pool_py() { python3 /usr/share/nanoborealis/pool.py "$@"; }
+        pool_home() { getent passwd "$POOL_USER" | cut -d: -f6; }
+        pool_ready() { id "$POOL_USER" >/dev/null 2>&1 && sudo test -f "$(pool_home)/.config/containers/systemd/exo.container"; }
+        as_pool() {
+            local uid; uid="$(id -u "$POOL_USER")"
+            ( cd / && sudo -u "$POOL_USER" env HOME="$(pool_home)" XDG_RUNTIME_DIR="/run/user/$uid" \
+                DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" "$@" )
+        }
+        poolctl() { sudo systemctl --user -M "$POOL_USER@" "$@"; }
+        pool_ports() {  # add|remove: discovery, links between nodes, the API peers check, model layers
+            sudo firewall-cmd --state >/dev/null 2>&1 || return 0
+            local p
+            for p in 52413/udp 52414/tcp 52415/tcp 49152-65535/tcp; do
+                sudo firewall-cmd --quiet --permanent "--$1-port=$p" || true
+            done
+            sudo firewall-cmd --quiet --reload
+        }
+        relay_up() {  # this computer's agent reaches the pool through the relay: chat only, with a token
+            agent_installed || return 0
+            if ! sudo test -f /etc/nanoborealis/pool.env; then
+                sudo install -d -m 0755 /etc/nanoborealis
+                python3 -c 'import secrets; print("NANOBOREALIS_RELAY_TOKEN=" + secrets.token_urlsafe(32))' \
+                    | sudo sh -c 'umask 077 && cat > /etc/nanoborealis/pool.env'
+            fi
+            sudo systemctl restart nanoborealis-firewall.service
+            sudo systemctl enable --quiet nanoborealis-pool-relay.service
+            sudo systemctl restart nanoborealis-pool-relay.service
+        }
+        agent_pool_model() { agent_installed && in_agent list 2>/dev/null | awk -F'\t' '$1 == "pool" { print $2 }'; }
+        case "${2:-status}" in
+            join)
+                exec_args=""
+                if [ "${3:-}" = --private ] && [[ "${4:-}" =~ ^[a-z0-9][a-z0-9-]{2,31}$ ]]; then
+                    exec_args="--namespace nanoborealis-$4"
+                elif [ -n "${3:-}" ]; then
+                    echo "usage: $me pool join [--private <name>]   (a name of 3-32 letters, digits and dashes)" >&2
+                    exit 2
+                fi
+                cat <<'TXT'
+Joining a pool lends this computer's memory and processor to the other pool computers on this
+network, so together they can run models too big for any one of them. Every computer here that
+runs a pool node of the same version is in the same pool, including exo on a Mac.
+
+The pool has no password: anyone on this network can use it and pick what it serves, which
+downloads models onto the computers in it. Only join on networks you trust, or use
+--private <name> so only computers that joined with that name pool with this one.
+The node runs under its own account, away from your files and the agent. Joining opens the
+network ports the pool uses (52413-52415, and 49152-65535 for model layers).
+TXT
+                read -r -p "Join the pool? [y/N] " reply
+                [[ "$reply" =~ ^[Yy] ]] || { echo "Nothing changed."; exit 0; }
+                if ! id "$POOL_USER" >/dev/null 2>&1; then
+                    sudo useradd --create-home --shell /usr/sbin/nologin --comment "NanoBorealis pool node" "$POOL_USER"
+                fi
+                if ! grep -q "^${POOL_USER}:" /etc/subuid || ! grep -q "^${POOL_USER}:" /etc/subgid; then
+                    echo "$POOL_USER has no subuid/subgid range, which rootless Podman needs (see 'man usermod')" >&2
+                    exit 1
+                fi
+                sudo loginctl enable-linger "$POOL_USER"
+                for _ in $(seq 1 30); do
+                    sudo test -S "/run/user/$(id -u "$POOL_USER")/bus" && break
+                    sleep 1
+                done
+                as_pool mkdir -p "$(pool_home)/.config/containers/systemd"
+                sed "s|^Exec=@EXEC_ARGS@\$|${exec_args:+Exec=$exec_args}|" /usr/share/nanoborealis/exo.container \
+                    | as_pool tee "$(pool_home)/.config/containers/systemd/exo.container" >/dev/null
+                pool_ports add
+                echo "Downloading the pool node (about 1.5 GB the first time; joining again updates it)..."
+                as_pool podman pull "$POOL_IMAGE"
+                poolctl daemon-reload
+                poolctl restart exo.service
+                pool_py wait
+                relay_up
+                echo
+                echo "This computer is in the pool."
+                pool_py status
+                echo
+                echo "Serve a model on it with: $me pool serve <model>"
+                echo "Models are Hugging Face names, e.g. mlx-community/Qwen3-30B-A3B-4bit (needs about 17 GB"
+                echo "of memory across the pool) or mlx-community/Qwen3-4B-4bit (about 3 GB)." ;;
+            serve)
+                model="${3:-}"
+                if [[ ! "$model" =~ ^[A-Za-z0-9._-]{1,64}/[A-Za-z0-9._-]{1,96}$ ]]; then
+                    echo "usage: $me pool serve <model>   e.g. mlx-community/Qwen3-30B-A3B-4bit" >&2
+                    exit 2
+                fi
+                pool_ready || { echo "Join a pool first: $me pool join" >&2; exit 1; }
+                pool_py serve "$model"
+                if agent_installed; then
+                    relay_up
+                    token="$(sudo sed -n 's/^NANOBOREALIS_RELAY_TOKEN=//p' /etc/nanoborealis/pool.env)"
+                    in_agent add pool "http://host.containers.internal:11436/v1" "$token" "$model"
+                    in_agent use pool
+                    agent_patience
+                    echo "The agent now uses $model on the pool first, and the cloud models when the pool is busy or off."
+                    echo "Back to the cloud first: $me compute use cloud"
+                fi ;;
+            stop)
+                [ -n "${3:-}" ] || { echo "usage: $me pool stop <model>" >&2; exit 2; }
+                pool_ready || { echo "This computer isn't in a pool." >&2; exit 1; }
+                pool_py stop "$3"
+                if [ "$(agent_pool_model)" = "$3" ]; then
+                    in_agent remove pool
+                    echo "The agent is back on the cloud models."
+                fi ;;
+            status)
+                pool_ready || { echo "This computer isn't in a pool. Join one with: $me pool join"; exit 0; }
+                pool_py status
+                used="$(agent_pool_model || true)"
+                [ -z "$used" ] || echo "This computer's agent can use: $used" ;;
+            logs)
+                pool_ready || { echo "This computer isn't in a pool." >&2; exit 1; }
+                as_pool podman logs --follow --tail 200 exo ;;
+            leave)
+                if pool_ready; then
+                    [ -z "$(agent_pool_model || true)" ] || in_agent remove pool
+                    poolctl stop exo.service || true
+                    sudo rm -f "$(pool_home)/.config/containers/systemd/exo.container"
+                    poolctl daemon-reload || true
+                    pool_ports remove
+                    sudo systemctl disable --now --quiet nanoborealis-pool-relay.service 2>/dev/null || true
+                    sudo rm -f /etc/nanoborealis/pool.env
+                    ! agent_installed || sudo systemctl restart nanoborealis-firewall.service
+                    echo "This computer has left the pool."
+                fi
+                if [ "${3:-}" = --delete-models ] && id "$POOL_USER" >/dev/null 2>&1; then
+                    as_pool podman volume rm --force exo-home >/dev/null && echo "Its downloaded models are deleted."
+                elif id "$POOL_USER" >/dev/null 2>&1; then
+                    echo "Downloaded models stay for next time; delete them with: $me pool leave --delete-models"
+                fi ;;
+            *)
+                echo "usage: $me pool join [--private NAME] | serve MODEL | stop MODEL | status | logs | leave [--delete-models]" >&2
+                exit 2 ;;
+        esac
+        exit 0 ;;
 esac
 
-id "$AGENT_USER" >/dev/null 2>&1 || { echo "the NanoBorealis agent is not installed ($AGENT_USER not found)" >&2; exit 1; }
-AGENT_UID="$(id -u "$AGENT_USER")"
-AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
-
-as_agent() {
-    ( cd / && sudo -u "$AGENT_USER" env \
-        HOME="$AGENT_HOME" \
-        XDG_RUNTIME_DIR="/run/user/$AGENT_UID" \
-        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$AGENT_UID/bus" \
-        "$@" )
-}
-agentctl() { sudo systemctl --user -M "$AGENT_USER@" "$@"; }
+agent_installed || { echo "the NanoBorealis agent is not installed ($AGENT_USER not found)" >&2; exit 1; }
 
 confirm() {
     local reply
@@ -185,7 +345,6 @@ XML
         # Devices share a model through the NanoBorealis client, which shows the `add` command
         # to run here. Each one gets a firewall exception for its own address and port only.
         dir=/etc/nanoborealis/compute.d
-        in_agent() { as_agent podman exec -i nanobot python3 - "$@" < /usr/share/nanoborealis/compute-config.py; }
         name_re='^[a-z0-9][a-z0-9-]{0,23}$'
         case "${2:-list}" in
             add)
@@ -202,6 +361,7 @@ XML
                 printf 'ip=%s\nport=%s\n' "$ip" "$port" | sudo tee "$dir/$name" >/dev/null
                 sudo systemctl restart nanoborealis-firewall.service
                 in_agent add "$name" "$url" "$token" "$model"
+                agent_patience
                 echo "The agent can now reach $name at $ip:$port, and still nothing else on your network."
                 echo "Make it the agent's first choice with: $(basename "$0") compute use $name" ;;
             remove)

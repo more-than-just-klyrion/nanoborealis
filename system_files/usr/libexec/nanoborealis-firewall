@@ -4,6 +4,8 @@
 # It may answer connections that LAN devices open to it (`nanoborealis remote on`), since
 # those packets travel in conntrack's reply direction; it can never start one itself.
 # Root loads this at boot, so the agent, which has no root on the host, can't undo it.
+# If this computer is in a pool, the agent may also use the pool relay (`nanoborealis pool`),
+# which offers chat only; the pool node's own API (no password) stays out of its reach.
 set -euo pipefail
 
 if ! uid="$(id -u nanobot-agent 2>/dev/null)"; then
@@ -25,6 +27,12 @@ for f in /etc/nanoborealis/compute.d/*; do
     fi
 done
 
+pool_rules=""
+if [ -f /etc/nanoborealis/pool.env ]; then
+    pool_rules="        meta skuid $uid fib daddr type local tcp dport 11436 accept"
+    echo "pool: the agent may use this computer's pool relay (port 11436)"
+fi
+
 nft -f - <<EOF
 add table inet nanoaurora
 delete table inet nanoaurora
@@ -44,11 +52,18 @@ table inet nanoborealis {
     chain output {
         type filter hook output priority filter; policy accept;
         meta skuid $uid ct direction reply accept
+        meta skuid $uid fib daddr type local tcp dport 52415 counter drop
+$pool_rules
 $compute_rules
         meta skuid $uid ip daddr @lan4 meta l4proto { tcp, udp } th dport 53 accept
         meta skuid $uid ip6 daddr @lan6 meta l4proto { tcp, udp } th dport 53 accept
         meta skuid $uid ip daddr @lan4 counter drop
         meta skuid $uid ip6 daddr @lan6 counter drop
+    }
+    chain input {
+        type filter hook input priority filter; policy accept;
+        # The pool relay is for this computer's agent only.
+        iifname != "lo" tcp dport 11436 counter drop
     }
 }
 EOF

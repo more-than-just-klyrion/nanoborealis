@@ -31,7 +31,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 | Dedicated `nanobot-agent` account | Owns nothing but the agent. Anything that escapes the container lands in an empty account, not yours |
 | Rootless Podman | Root inside the container is an unprivileged user on the host |
 | One shared folder | The only host path the agent sees is the projects folder |
-| Network guard | `nanoborealis-firewall.service` loads at boot, before any user services start, and drops the agent's traffic to private, link-local, and CGNAT addresses. The only exceptions are devices you approve with `nanoborealis compute add`, each limited to one address and port |
+| Network guard | `nanoborealis-firewall.service` loads at boot, before any user services start, and drops the agent's traffic to private, link-local, and CGNAT addresses. The only exceptions are devices you approve with `nanoborealis compute add`, each limited to one address and port, and, on a computer in a pool, this computer's pool relay, which offers chat only |
 | SELinux | Enforcing, and the projects folder is labeled for container use |
 | Loopback-only WebUI | Reachable only from this machine, and only with the password, until you run `nanoborealis remote on` |
 | Read-only OS | Aurora's system image can't be modified by anything the agent can reach |
@@ -43,6 +43,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 - **Free providers may log prompts.** Keep personal files and logged-in accounts off this machine.
 - **Secrets aren't encrypted at rest.** Podman keeps them in a file only `nanobot-agent` and root can read.
 - **Remote access is plain HTTP.** With `nanoborealis remote on`, the WebUI password crosses your network unencrypted. Only turn it on for networks you trust.
+- **A pool trusts its network.** exo has no password, so once a computer joins a pool, anyone on the network can use the pool and pick what it serves, which makes its computers download models. The node runs in its own account and container, away from your files and the agent. Only join on networks you trust, or join with `--private <name>`.
 
 ## Day to day
 
@@ -58,6 +59,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 | `nanoborealis password` | Show the WebUI password |
 | `nanoborealis remote on` / `off` / `status` | Let other devices on your network use the agent through the NanoBorealis client or a browser, or go back to this machine only. While it's on, this machine announces itself over mDNS so clients find it without an address |
 | `nanoborealis compute add` / `remove` / `use` / `list` | Run the agent on a model hosted by another device. The NanoBorealis client sets the device up and shows the exact `add` command; `use <name>` makes it the first choice, `use cloud` switches back |
+| `nanoborealis pool join` / `serve` / `stop` / `status` / `logs` / `leave` | Pool this computer with others on your network so together they run models too big for any one of them. See [Pooling computers](#pooling-computers) |
 | `nanoborealis set-key` | Swap the OpenRouter key |
 | `nanoborealis rebuild [X.Y.Z]` | Rebuild the agent's container, optionally at a new nanobot version |
 | `nanoborealis reset` | **Delete** the agent's home (memory, sessions, settings, tools) and start fresh. Projects are kept |
@@ -66,6 +68,20 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 The earlier names `nanoaurora` and `nanobot-os` still work as well.
 
 **The container is disposable; the home is not.** The agent's home directory, including config, memory, sessions, skills, and anything installed there, lives on the `nanobot-home` volume and survives restarts and rebuilds. Packages installed with apt disappear when the container is recreated, unless they're listed in `~/.config/nanoborealis/apt-packages`.
+
+## Pooling computers
+
+Every computer that runs `nanoborealis pool join` becomes a node of one pool, and their memory adds up: a model too big for any one of them is split into layers across several. The nodes run [exo](https://github.com/exo-explore/exo), pinned to a build that CI first proves by splitting a model across two nodes. Computers without NanoBorealis can join too, by running the same exo version.
+
+```bash
+nanoborealis pool join                                      # on every computer that lends its memory
+nanoborealis pool serve mlx-community/Qwen3-30B-A3B-4bit    # on the computer with the agent
+nanoborealis pool status                                    # the computers, their free memory, what's served
+```
+
+`serve` places the model where it fits, waits while each computer downloads its part, then makes it the agent's first choice. The cloud models stay as fallbacks, and `nanoborealis compute use cloud` puts them first again. The agent reaches the pool through a relay on its own computer that needs a token and passes on chat requests only, so it can't make the pool download or delete anything. `leave` takes the computer out and keeps its downloaded models for next time; `leave --delete-models` removes them.
+
+Pools run on the processor today, which is slow for the agent's long prompts. A pool of NVIDIA GPUs needs exo's CUDA build, which comes next. Another engine, such as a fork of exo, builds from [`pool/Containerfile`](https://github.com/more-than-just-klyrion/nanoborealis/blob/main/pool/Containerfile) with `EXO_REPO` and `EXO_REF`.
 
 ## Changing things
 

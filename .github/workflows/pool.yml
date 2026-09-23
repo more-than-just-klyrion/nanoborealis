@@ -11,6 +11,8 @@ on:
     paths:
       - 'pool/**'
       - '.github/workflows/pool.yml'
+      - 'system_files/usr/share/nanoborealis/pool.py'
+      - 'system_files/usr/libexec/nanoborealis-relay'
   workflow_dispatch:
     inputs:
       exo_repo:
@@ -106,7 +108,28 @@ jobs:
             podman push nanoborealis-pool:cpu "ghcr.io/$owner/nanoborealis-pool:$tag"
           done
 
-      # By now the model is split across both nodes, so this is the agent on a two-machine pool.
+      # What `nanoborealis pool` runs on a computer, against the live two-node pool.
+      - name: The OS's pool tools on the live pool
+        env:
+          TOKEN: ci-relay-token-0123456789
+        run: |
+          tools=system_files/usr/share/nanoborealis
+          timeout 1800 python3 $tools/pool.py serve "$MODEL"
+          python3 $tools/pool.py status | tee status.txt
+          grep -q "Computers in the pool: 2" status.txt
+          grep -qF "$MODEL" status.txt
+          # The relay the agent goes through: chat only, and only with its token.
+          NANOBOREALIS_RELAY_TOKEN="$TOKEN" NANOBOREALIS_RELAY_LISTEN=127.0.0.1:11436 \
+            nohup python3 system_files/usr/libexec/nanoborealis-relay > "$RUNNER_TEMP/relay.log" 2>&1 &
+          sleep 1
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:11436/v1/models)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" \
+                  -d '{}' http://127.0.0.1:11436/place_instance)" = 403
+          curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:11436/v1/models -o /dev/null
+          echo "relay: refuses strangers and everything but chat"
+
+      # By now the model is split across both nodes, so this is the agent on a two-machine pool,
+      # reached through the relay as on a NanoBorealis computer.
       # A CPU runner needs most of an hour to read the agent's long prompt, so the turn is
       # reported but doesn't hold back the image; the tool-call check above gates it.
       - name: A real agent turn through the pool
@@ -120,7 +143,7 @@ jobs:
           python3 - "$RUNNER_TEMP/gw/config.json" <<'EOF'
           import json, os, sys
           json.dump({
-              "providers": {"device-pool": {"apiBase": "http://127.0.0.1:52415/v1", "apiKey": "none"}},
+              "providers": {"device-pool": {"apiBase": "http://127.0.0.1:11436/v1", "apiKey": "ci-relay-token-0123456789"}},
               "modelPresets": {"device-pool": {"provider": "device-pool", "model": os.environ["MODEL"], "maxTokens": 1024,
                                                "contextWindowTokens": 32768, "temperature": 0.2}},
               "agents": {"defaults": {"modelPreset": "device-pool"}},

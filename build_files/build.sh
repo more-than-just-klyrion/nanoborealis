@@ -11,6 +11,7 @@ chmod 0755 /usr/libexec/nanoborealis-firstrun \
            /usr/libexec/nanoborealis-firewall \
            /usr/libexec/nanoborealis-migrate \
            /usr/libexec/nanoborealis-setup-from-stick \
+           /usr/libexec/nanoborealis-relay \
            /usr/share/nanoborealis/install.sh \
            /usr/share/nanoborealis/nanoborealis \
            /usr/share/nanoborealis/image/entrypoint.sh

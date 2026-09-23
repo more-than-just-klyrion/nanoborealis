@@ -1,0 +1,28 @@
+# Quadlet unit for this computer's pool node (exo). `nanoborealis pool join` copies it to
+# ~nanoborealis-pool/.config/containers/systemd/, and systemd runs it as that account's service.
+
+[Unit]
+Description=NanoBorealis pool node (exo)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=ghcr.io/more-than-just-klyrion/nanoborealis-pool:cpu
+ContainerName=exo
+# The host's network: pool nodes find each other and trade model layers over the local network.
+Network=host
+# Downloaded models and the node's identity survive restarts and image updates.
+Volume=exo-home:/home/exo
+UserNS=keep-id:uid=1000,gid=1000
+Exec=@EXEC_ARGS@
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=on-failure
+RestartSec=10
+# The first start downloads the node image.
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=default.target

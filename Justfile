@@ -174,6 +174,14 @@ ostree-rechunk $target_image=image_name $tag=default_tag:
 
     GRAPHROOT="$(podman info --format '{{ '{{.Store.GraphRoot}}' }}')"
 
+    # rpm-ostree writes a fresh image config, which drops the labels set at build time. Promotion
+    # reads the build's commit from them, so note ours now and put them back afterwards.
+    LABEL_ARGS=()
+    while IFS= read -r label; do
+        LABEL_ARGS+=(--label "$label")
+    done < <(podman image inspect "${RPM_OSTREE_CHUNKER_IMAGE}" \
+        | jq -r '.[0].Labels // {} | to_entries[] | select(.key | test("^(org[.]opencontainers[.]image[.]|io[.]artifacthub[.])")) | "\(.key)=\(.value)"')
+
     podman run --rm --pull=never --privileged \
       --mount=type=image,src="${target_image}:${tag}",target=/rpm-ostree \
       --mount=type=bind,src=${GRAPHROOT},target=/run/host-container-storage,rw \
@@ -186,6 +194,14 @@ ostree-rechunk $target_image=image_name $tag=default_tag:
       --bootc \
       --rootfs /rpm-ostree \
       --output "containers-storage:[overlay@/run/host-container-storage+/run/rpm-ostree-storage]localhost/${target_image}:${tag}"
+
+    # Only metadata changes here; the rechunked layers stay as they are.
+    LABEL_CTX="$(mktemp -d)"
+    printf 'FROM %s\n' "${RPM_OSTREE_CHUNKER_IMAGE}" > "${LABEL_CTX}/Containerfile"
+    podman build --pull=never "${LABEL_ARGS[@]}" --tag "${RPM_OSTREE_CHUNKER_IMAGE}" "${LABEL_CTX}"
+    rm -rf "${LABEL_CTX}"
+    podman image inspect "${RPM_OSTREE_CHUNKER_IMAGE}" \
+        | jq -r '.[0].Labels["org.opencontainers.image.revision"] // "no revision label"'
 
 # Generate Default Tag
 [group('Utility')]
