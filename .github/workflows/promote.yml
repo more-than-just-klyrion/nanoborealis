@@ -47,6 +47,8 @@ jobs:
           revision="$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.revision"}}' "docker://$IMAGE@$digest")"
           version="$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.version"}}' "docker://$IMAGE@$digest")"
           [ -n "$revision" ] && [ "$revision" != "<no value>" ] || revision="$(echo "$version" | sed -n 's/.*-\([0-9a-f]\{7,\}\)$/\1/p')"
+          # Builds made before labels survived rechunking carry the commit only in their tag.
+          [ -n "$revision" ] || revision="$(echo "$SOURCE" | sed -n 's/.*-\([0-9a-f]\{7,40\}\)$/\1/p')"
           echo "build: $ref -> $digest ($version, commit $revision)"
           echo "DIGEST=$digest" >> "$GITHUB_ENV"
           echo "REVISION=$revision" >> "$GITHUB_ENV"
