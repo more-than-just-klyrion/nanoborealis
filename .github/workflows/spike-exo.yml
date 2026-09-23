@@ -90,14 +90,28 @@ jobs:
           curl -sN "$EXO/instance/await?model_id=$model&timeout_seconds=300" | head -c 600
           echo
 
-      - name: Plain chat (waits for the download)
+      - name: Wait for the model to download and load
         run: |
-          for i in $(seq 1 60); do
-            if curl -sf -X POST "$EXO/v1/chat/completions" -H 'Content-Type: application/json' -o "$RUNNER_TEMP/chat.json" \
-                 -d "{\"model\": \"$MODEL\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello in five words.\"}], \"max_tokens\": 64}"; then
+          for i in $(seq 1 90); do
+            if curl -sf "$EXO/v1/models?status=downloaded" | python3 -c 'import json,sys,os; ids=[m["id"] for m in json.load(sys.stdin)["data"]]; sys.exit(0 if os.environ["MODEL"] in ids else 1)'; then
+              echo "downloaded after ~$((i * 10))s"
               break
             fi
-            sleep 20
+            sleep 10
+          done
+          curl -s "$EXO/state" | python3 -c 'import json,sys; s=json.load(sys.stdin); print("state keys:", sorted(s)); print("runners:", json.dumps(s.get("runners"))[:1500])' || true
+
+      - name: Plain chat
+        run: |
+          # exo answers 200 with an empty body while the runner is still loading, so retry until the reply parses.
+          for i in $(seq 1 40); do
+            curl -s -X POST "$EXO/v1/chat/completions" -H 'Content-Type: application/json' -o "$RUNNER_TEMP/chat.json" \
+              -d "{\"model\": \"$MODEL\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello in five words.\"}], \"max_tokens\": 64}" || true
+            if python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["choices"]' "$RUNNER_TEMP/chat.json" 2>/dev/null; then
+              echo "answered on attempt $i"
+              break
+            fi
+            sleep 15
           done
           python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("reply:", r["choices"][0]["message"].get("content")); print("usage:", r.get("usage"))' "$RUNNER_TEMP/chat.json"
 
@@ -146,5 +160,8 @@ jobs:
       - name: Logs
         if: always()
         run: |
-          echo "--- exo"; tail -n 80 "$RUNNER_TEMP/exo.log" || true
+          echo "--- exo (progress and errors, tracebacks folded)"
+          sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/exo.log" | grep -v '^[[:space:]│└]' \
+            | grep -iE 'download|runner|load|instance|placement|shard|error|warn|assert|memory|ready' | tail -n 80 || true
+          echo "--- exo (last lines)"; sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/exo.log" | grep -v '^[[:space:]│└]' | tail -n 25 || true
           echo "--- gateway"; tail -n 60 "$RUNNER_TEMP/gateway.log" || true
