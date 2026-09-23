@@ -1,0 +1,31 @@
+---
+name: Branding inventory
+
+# Lists what upstream Aurora (and our build) use for branding, so the reskin overrides the right
+# files and upstream changes to them are easy to spot. Run by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Image to inventory"
+        required: false
+        default: "ghcr.io/ublue-os/aurora:stable"
+
+jobs:
+  inventory:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      IMAGE: ${{ inputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Make room
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Inventory
+        run: |
+          podman pull "$IMAGE"
+          podman run --rm --entrypoint /usr/bin/bash -v "$PWD/tests:/tests:ro" "$IMAGE" /tests/branding-inventory.sh

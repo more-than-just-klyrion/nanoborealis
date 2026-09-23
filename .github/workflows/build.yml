@@ -9,8 +9,16 @@ on:
   push:
     branches:
       - main
+    # Only changes that can alter the OS image rebuild it (a push cancels a build in progress).
     paths-ignore:
       - '**/README.md'
+      - 'client/**'
+      - '.github/workflows/test-*.yml'
+      - '.github/workflows/spike-*.yml'
+      - '.github/workflows/promote.yml'
+      - '.github/workflows/branding-inventory.yml'
+      - '.github/workflows/build-disk.yml'
+      - 'tests/branding-inventory.sh'
   workflow_dispatch:
 
 env:
