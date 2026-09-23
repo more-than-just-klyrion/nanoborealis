@@ -1,0 +1,62 @@
+---
+name: Test agent container
+
+# Builds the agent image from the kit and starts it the way the Quadlet unit does on a
+# laptop, so a broken agent image fails here instead of during someone's first login.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'system_files/usr/share/nanobot-os/**'
+      - '.github/workflows/test-agent.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'system_files/usr/share/nanobot-os/**'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build and start the agent container
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Build the agent image
+        run: podman build -t nanobot-agent-test system_files/usr/share/nanobot-os/image
+
+      - name: Start it like the Quadlet unit does
+        run: |
+          printf '%s' 'sk-or-v1-placeholder-not-a-real-key' | podman secret create openrouter_api_key -
+          printf '%s' 'ci-test-password' | podman secret create nanobot_webui_secret -
+          podman run -d --name nanobot \
+            --userns=keep-id:uid=1000,gid=1000 \
+            --cap-drop=ALL --security-opt no-new-privileges \
+            -v nanobot-data:/home/nanobot/.nanobot \
+            -p 127.0.0.1:8765:8765 \
+            --secret openrouter_api_key,type=env,target=OPENROUTER_API_KEY \
+            --secret nanobot_webui_secret,type=env,target=NANOBOT_WEBUI_SECRET \
+            nanobot-agent-test gateway --foreground
+          code=000
+          for i in $(seq 1 60); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/ || true)"
+            [ "$code" != "000" ] && break
+            if [ "$(podman inspect -f '{{.State.Running}}' nanobot)" != "true" ]; then
+              echo "container exited early"
+              break
+            fi
+            sleep 2
+          done
+          echo "--- container log ---"
+          podman logs nanobot 2>&1 | tail -60
+          echo "--- WebUI answered with HTTP $code ---"
+          [ "$code" != "000" ]
+
+      - name: Check the seeded config and skills landed in the volume
+        run: |
+          podman exec nanobot sh -c 'ls -la ~/.nanobot ~/.nanobot/workspace/skills && test -f ~/.nanobot/config.json'

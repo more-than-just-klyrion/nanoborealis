@@ -20,8 +20,10 @@ RUN sed -i 's/\r$//' /usr/local/bin/nanobot-entrypoint \
 
 USER nanobot
 WORKDIR /home/nanobot
+# The base image sets UV_TOOL_BIN_DIR=/usr/local/bin, which this unprivileged user can't write.
 ENV HOME=/home/nanobot \
     PATH=/home/nanobot/.local/bin:$PATH \
+    UV_TOOL_BIN_DIR=/home/nanobot/.local/bin \
     UV_PYTHON_PREFERENCE=only-system \
     PYTHONUNBUFFERED=1
 
