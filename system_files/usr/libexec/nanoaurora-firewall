@@ -11,6 +11,20 @@ if ! uid="$(id -u nanobot-agent 2>/dev/null)"; then
     exit 0
 fi
 
+# Devices the owner approved with `nanoaurora compute add`: one address and port each.
+compute_rules=""
+for f in /etc/nanoaurora/compute.d/*; do
+    [ -f "$f" ] || continue
+    ip="$(sed -n 's/^ip=//p' "$f")"
+    port="$(sed -n 's/^port=//p' "$f")"
+    if [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ && "$port" =~ ^[0-9]{1,5}$ ]]; then
+        compute_rules+="        meta skuid $uid ip daddr $ip tcp dport $port accept"$'\n'
+        echo "compute device $(basename "$f"): the agent may reach $ip:$port"
+    else
+        echo "skipping malformed $f" >&2
+    fi
+done
+
 nft -f - <<EOF
 add table inet nanoaurora
 delete table inet nanoaurora
@@ -28,6 +42,7 @@ table inet nanoaurora {
     chain output {
         type filter hook output priority filter; policy accept;
         meta skuid $uid ct direction reply accept
+$compute_rules
         meta skuid $uid ip daddr @lan4 meta l4proto { tcp, udp } th dport 53 accept
         meta skuid $uid ip6 daddr @lan6 meta l4proto { tcp, udp } th dport 53 accept
         meta skuid $uid ip daddr @lan4 counter drop

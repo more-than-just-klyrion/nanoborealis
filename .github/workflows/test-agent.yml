@@ -87,6 +87,27 @@ jobs:
           "$RUNNER_TEMP/start-agent.sh"
           podman exec nanobot sh -c 'test -f ~/persist-marker && command -v hello && hello'
 
+      - name: nanoaurora compute registers and removes a device in the agent's config
+        run: |
+          s=system_files/usr/share/nanobot-os/compute-config.py
+          read_config='import json, os; c = json.load(open(os.path.expanduser("~/.nanobot/config.json"))); d = c["agents"]["defaults"]'
+          podman exec -i nanobot python3 - add laptop2 http://192.168.1.50:11435/v1 abcdefghijklmnopqrst nanoaurora-qwen3-8b-32k < "$s"
+          podman exec -i nanobot python3 - use laptop2 < "$s"
+          podman exec nanobot python3 -c "$read_config"'
+          assert d["modelPreset"] == "device-laptop2", d
+          assert d["fallbackModels"] == ["ultra", "super", "lightning"], d
+          assert c["providers"]["device-laptop2"]["apiBase"] == "http://192.168.1.50:11435/v1"
+          assert c["providers"]["openrouter"]["apiKey"] == "${OPENROUTER_API_KEY}", "placeholders must survive"
+          print("ok: device registered and selected")'
+          podman exec -i nanobot python3 - remove laptop2 < "$s"
+          podman exec nanobot python3 -c "$read_config"'
+          assert d["modelPreset"] == "ultra" and "device-laptop2" not in c["modelPresets"], d
+          print("ok: device removed, cloud models back")'
+          sleep 3
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/)"
+          echo "WebUI after the config edits: HTTP $code"
+          [ "$code" != "000" ]
+
   firewall:
     name: Network guard keeps the agent off the LAN
     runs-on: ubuntu-24.04
@@ -133,3 +154,29 @@ jobs:
             exit 1
           fi
           echo "ok: a LAN client reaches the agent's port on $lan_ip:8081"
+
+      - name: An approved compute device's port opens, and nothing else does
+        run: |
+          lan_ip="$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1)}')"
+          for port in 8083 8084; do python3 -m http.server $port --bind 0.0.0.0 >/dev/null 2>&1 & done
+          sudo install -d /etc/nanoaurora/compute.d
+          printf 'ip=%s\nport=%s\n' "$lan_ip" 8083 | sudo tee /etc/nanoaurora/compute.d/ci-device >/dev/null
+          sudo bash system_files/usr/libexec/nanoaurora-firewall
+          sleep 1
+          if ! sudo -u nanobot-agent curl -s -o /dev/null --max-time 5 "http://$lan_ip:8083/"; then
+            echo "FAIL: the approved device port is still blocked"
+            exit 1
+          fi
+          echo "ok: the agent reaches the approved device at $lan_ip:8083"
+          if sudo -u nanobot-agent curl -s -o /dev/null --max-time 5 "http://$lan_ip:8084/"; then
+            echo "FAIL: another port on the same device opened too"
+            exit 1
+          fi
+          echo "ok: other ports stay blocked"
+          sudo rm /etc/nanoaurora/compute.d/ci-device
+          sudo bash system_files/usr/libexec/nanoaurora-firewall
+          if sudo -u nanobot-agent curl -s -o /dev/null --max-time 5 "http://$lan_ip:8083/"; then
+            echo "FAIL: removing the device left its port open"
+            exit 1
+          fi
+          echo "ok: removing the device closes its port again"

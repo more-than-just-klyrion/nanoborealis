@@ -10,14 +10,17 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 import sys
 import time
+import urllib.parse
 import uuid
 from datetime import datetime
 from typing import Any
 
 import flet as ft
 
+import compute
 from agent_link import AgentLink, AuthError, LinkError
 
 NARROW = 760  # below this width the chat list moves into a drawer
@@ -27,6 +30,7 @@ MONO = "monospace"
 PREF_ADDRESS = "nanoaurora.address"
 PREF_PASSWORD = "nanoaurora.password"
 PREF_CLIENT_ID = "nanoaurora.client_id"
+PREF_COMPUTE = "nanoaurora.compute"  # JSON: consent, token, served model, speeds
 SUGGESTIONS = [
     ("Plan a project", "Help me plan a small Python project. Ask me what it should do first."),
     ("Look at my projects", "Look through ~/projects and tell me what is there."),
@@ -144,6 +148,11 @@ class NanoAuroraApp:
         self.dirty: dict[int, ft.Control] = {}
         self.flush_task: asyncio.Task | None = None
         self.scroll_task: asyncio.Future | None = None
+        # Compute sharing: this device hosting a model for the agent, with the owner's consent.
+        self.share: dict[str, Any] = {}
+        self.relay: compute.Relay | None = None
+        self.share_busy = False
+        self.url_launcher = ft.UrlLauncher()
 
     # -- Startup and connecting ------------------------------------------------
 
@@ -275,6 +284,8 @@ class NanoAuroraApp:
         self.was_up = False
         self.show_chat()
         self.page.run_task(self.keep_linked, link)
+        if self.relay is None:
+            self.page.run_task(self.resume_sharing_on_start)
 
     async def keep_linked(self, link: AgentLink) -> None:
         try:
@@ -372,8 +383,25 @@ class NanoAuroraApp:
             ft.Container(ft.Text("Recent", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
                          padding=ft.Padding.only(left=20, top=10, bottom=2)),
         ]
+        sharing = self.relay is not None and self.relay.running
+        share = ft.Container(
+            padding=ft.Padding.symmetric(horizontal=8),
+            content=ft.Container(
+                border_radius=10, ink=True, padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                on_click=on(self.open_share_dialog),
+                content=ft.Row([
+                    ft.Icon(ft.Icons.MEMORY_ROUNDED, size=18,
+                            color=ft.Colors.GREEN_400 if sharing else ft.Colors.ON_SURFACE_VARIANT),
+                    ft.Column([
+                        ft.Text("Sharing this device" if sharing else "Share this device's hardware", size=13),
+                        ft.Text(self.share_summary(), size=11, color=ft.Colors.ON_SURFACE_VARIANT,
+                                max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    ], spacing=0, tight=True, expand=True),
+                ], spacing=10),
+            ),
+        )
         bottom = ft.Container(
-            padding=ft.Padding.only(left=16, right=8, top=8, bottom=12),
+            padding=ft.Padding.only(left=16, right=8, top=4, bottom=12),
             content=ft.Row([
                 ft.Icon(ft.Icons.LINK_ROUNDED, size=16, color=ft.Colors.ON_SURFACE_VARIANT),
                 ft.Text(self.link.base_url if self.link else "", size=12, color=ft.Colors.ON_SURFACE_VARIANT,
@@ -381,7 +409,8 @@ class NanoAuroraApp:
                 ft.IconButton(ft.Icons.LOGOUT_ROUNDED, icon_size=18, tooltip="Disconnect", on_click=on(self.disconnect)),
             ], spacing=6),
         )
-        return ft.Column(expand=True, spacing=6, controls=[*top, *([chat_list] if chat_list else []), bottom])
+        return ft.Column(expand=True, spacing=6,
+                         controls=[*top, *([chat_list] if chat_list else []), ft.Divider(height=1), share, bottom])
 
     def welcome_view(self) -> ft.Control:
         chips = [
@@ -765,6 +794,231 @@ class NanoAuroraApp:
         await self.refresh_chats()
         if reconnect and self.chat_id:
             await self.open_chat(self.chat_id)  # catch up on anything missed while offline
+
+    # -- Compute sharing -----------------------------------------------------------
+
+    def share_summary(self) -> str:
+        if self.relay is not None and self.relay.running:
+            return (f"{self.share.get('tag', '')} · {self.share.get('gen_tps', 0):.0f} tokens/s · "
+                    f"{self.relay.requests} requests")
+        if self.share.get("consent") and self.share.get("served"):
+            return "Paused. Open to resume."
+        return "Let the agent use this GPU, CPU and RAM"
+
+    def refresh_sidebar(self) -> None:
+        if self.in_chat_view:
+            self.sidebar.content = self.sidebar_column(self.chat_list)
+            self.render_chat_list()  # rebuilds the drawer's copy too
+            self.page.update()
+
+    async def load_share(self) -> None:
+        raw = await self.pref_get(PREF_COMPUTE)
+        try:
+            self.share = json.loads(raw) if raw else {}
+        except ValueError:
+            self.share = {}
+
+    async def save_share(self) -> None:
+        await self.pref_set(PREF_COMPUTE, json.dumps(self.share))
+
+    async def resume_sharing_on_start(self) -> None:
+        """Share again after a restart, but only if the owner already allowed it on this device."""
+        await self.load_share()
+        if self.share.get("consent") and self.share.get("served") and self.share.get("token"):
+            if await asyncio.to_thread(compute.start_ollama):
+                try:
+                    installed = await asyncio.to_thread(compute.installed_models)
+                except compute.OllamaError:
+                    installed = set()
+                if {self.share["served"], f"{self.share['served']}:latest"} & installed:
+                    await self.start_relay()
+        self.refresh_sidebar()
+
+    async def start_relay(self) -> str | None:
+        if self.relay is not None and self.relay.running:
+            return None
+        relay = compute.Relay(self.share["token"])
+        try:
+            await relay.start()
+        except OSError as e:
+            return f"Couldn't open port {compute.RELAY_PORT} on this device: {e}"
+        self.relay = relay
+        self.refresh_sidebar()
+        return None
+
+    def device_address(self) -> str:
+        if self.link is not None:
+            parts = urllib.parse.urlsplit(self.link.base_url)
+            try:
+                return compute.local_address_towards(parts.hostname or "", parts.port or 8765)
+            except OSError:
+                pass
+        return "<this-device-address>"
+
+    def set_share_body(self, controls: list[ft.Control], actions: list[ft.Control]) -> None:
+        self.share_body.controls = controls
+        self.share_actions.controls = actions
+        self.page.update()
+
+    @staticmethod
+    def bullet(text: str) -> ft.Control:
+        return ft.Row([ft.Text("•", size=13), ft.Text(text, size=13, expand=True)],
+                      spacing=8, vertical_alignment=ft.CrossAxisAlignment.START)
+
+    @staticmethod
+    def working(text: str) -> ft.Control:
+        return ft.Row([ft.ProgressRing(width=16, height=16, stroke_width=2), ft.Text(text, size=13)], spacing=10)
+
+    async def open_share_dialog(self) -> None:
+        if self.page.width and self.page.width < NARROW:
+            await self.page.close_drawer()
+        self.share_body = ft.Column(tight=True, spacing=12, scroll=ft.ScrollMode.AUTO)
+        self.share_actions = ft.Row(spacing=8, wrap=True, alignment=ft.MainAxisAlignment.END)
+        self.share_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Share this device's hardware", size=18, weight=ft.FontWeight.W_600),
+            content=ft.Container(self.share_body, width=500),
+            actions=[self.share_actions],
+        )
+        self.page.show_dialog(self.share_dialog)
+        if self.relay is not None and self.relay.running:
+            self.show_share_running()
+        elif self.share_busy:
+            self.set_share_body([self.working("Setting up a model; this keeps going in the background.")],
+                                [ft.TextButton("Hide", on_click=on(self.close_share_dialog))])
+        else:
+            await self.show_share_consent()
+
+    async def close_share_dialog(self) -> None:
+        self.page.pop_dialog()
+
+    async def show_share_consent(self) -> None:
+        self.set_share_body([self.working("Checking this device...")], [])
+        hw = await asyncio.to_thread(compute.probe)
+        options = compute.plans(hw)
+        best = options[0] if options else None
+        if best:
+            place = "its GPU" if best.where == "gpu" else "its CPU and memory"
+            first = (f"The first choice here is {best.model.tag}: a {best.model.download_gb:.1f} GB download "
+                     f"with a {best.context // 1024}K context, running on {place}.")
+        else:
+            first = "No model fits right now. Close some apps to free memory or disk, then try again."
+        self.set_share_body([
+            ft.Text(hw.describe(), size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text("Your agent can run on a model hosted on this device instead of free cloud models.", size=14),
+            self.bullet("NanoAurora picks the most capable model that fits, downloads it with Ollama, and tests "
+                        "its speed. Any model it downloads and then rejects is deleted again."),
+            self.bullet(first),
+            self.bullet(f"While this app is open, it answers the agent on port {compute.RELAY_PORT}: only with "
+                        "this device's secret token, and only for chat. Your system may ask to allow network access."),
+            self.bullet("You can stop sharing at any time."),
+        ], [
+            ft.TextButton("Not now", on_click=on(self.close_share_dialog)),
+            *([ft.FilledButton("Allow on this device", icon=ft.Icons.MEMORY_ROUNDED,
+                               on_click=on(self.allow_share, hw))] if best else []),
+        ])
+
+    async def allow_share(self, hw: compute.Hardware) -> None:
+        self.share["consent"] = True
+        self.share.setdefault("token", secrets.token_urlsafe(24))
+        await self.save_share()
+        self.set_share_body([self.working("Looking for Ollama...")], [])
+        if not await asyncio.to_thread(compute.start_ollama):
+            self.set_share_body([
+                ft.Text("This needs Ollama, the free app that runs the models. Install it, then press Check again.",
+                        size=14),
+            ], [
+                ft.TextButton("Cancel", on_click=on(self.close_share_dialog)),
+                ft.OutlinedButton("Get Ollama", icon=ft.Icons.OPEN_IN_NEW_ROUNDED, on_click=on(self.open_ollama_site)),
+                ft.FilledButton("Check again", icon=ft.Icons.REFRESH_ROUNDED, on_click=on(self.allow_share, hw)),
+            ])
+            return
+        await self.choose_model(hw)
+
+    async def open_ollama_site(self) -> None:
+        await self.url_launcher.launch_url("https://ollama.com/download")
+
+    async def choose_model(self, hw: compute.Hardware) -> None:
+        status = ft.Text("Starting...", size=13)
+        bar = ft.ProgressBar(value=None)
+        steps = ft.Column(spacing=2, tight=True)
+        self.set_share_body([status, bar, steps], [ft.TextButton("Hide", on_click=on(self.close_share_dialog))])
+        loop = asyncio.get_running_loop()
+        last = {"at": 0.0, "text": ""}
+
+        def report(text: str, fraction: float | None) -> None:  # runs on the worker thread
+            now = time.monotonic()
+            if text == last["text"] and fraction is not None and now - last["at"] < 0.25:
+                return  # download progress arrives many times a second
+            last.update(at=now, text=text)
+
+            def apply() -> None:
+                status.value = text
+                bar.value = fraction
+                if fraction is None and not text.startswith("Testing"):
+                    steps.controls.append(ft.Text(text, size=12, color=ft.Colors.ON_SURFACE_VARIANT))
+                try:
+                    self.page.update()
+                except Exception:
+                    pass
+
+            loop.call_soon_threadsafe(apply)
+
+        self.share_busy = True
+        try:
+            choice = await asyncio.to_thread(compute.choose, hw, report)
+        except (compute.OllamaError, OSError, ValueError) as e:
+            self.set_share_body([ft.Text(f"Couldn't set up a model: {e}", size=13, color=ft.Colors.ERROR)],
+                                [ft.TextButton("Close", on_click=on(self.close_share_dialog))])
+            return
+        finally:
+            self.share_busy = False
+        self.share.update(tag=choice.plan.model.tag, served=choice.served, context=choice.plan.context,
+                          gen_tps=round(choice.gen_tps, 1), prompt_tps=round(choice.prompt_tps))
+        await self.save_share()
+        error = await self.start_relay()
+        if error:
+            self.set_share_body([ft.Text(error, size=13, color=ft.Colors.ERROR)],
+                                [ft.TextButton("Close", on_click=on(self.close_share_dialog))])
+            return
+        self.show_share_running()
+
+    def show_share_running(self) -> None:
+        name = compute.device_name()
+        command = compute.host_command(name, self.device_address(), self.share["token"], self.share["served"])
+        self.set_share_body([
+            ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED, color=ft.Colors.GREEN_400),
+                    ft.Text(f"Serving {self.share.get('tag')}: reads {self.share.get('prompt_tps', 0):.0f} and "
+                            f"writes {self.share.get('gen_tps', 0):.0f} tokens/s.", size=14, expand=True)],
+                   spacing=10),
+            ft.Text("To let the agent use it, run this once on your NanoAurora machine:", size=13),
+            ft.Container(ft.Text(command, font_family=MONO, size=12, selectable=True),
+                         bgcolor=ft.Colors.SURFACE_CONTAINER, border_radius=8, padding=10),
+            ft.Text(f"Then nanoaurora compute use {name} makes it the agent's first choice. The agent falls "
+                    "back to its cloud models whenever this device is off.", size=12,
+                    color=ft.Colors.ON_SURFACE_VARIANT),
+        ], [
+            ft.TextButton("Stop sharing", on_click=on(self.stop_sharing)),
+            ft.OutlinedButton("Copy command", icon=ft.Icons.CONTENT_COPY_ROUNDED, on_click=on(self.copy_text, command)),
+            ft.FilledButton("Done", on_click=on(self.close_share_dialog)),
+        ])
+
+    async def stop_sharing(self) -> None:
+        if self.relay is not None:
+            await self.relay.stop()
+            self.relay = None
+        self.share["consent"] = False  # don't start again on the next launch
+        await self.save_share()
+        self.set_share_body([
+            ft.Text("This device has stopped sharing. The agent is back on its cloud models.", size=14),
+            ft.Text(f"To take it off the agent's list too, run nanoaurora compute remove {compute.device_name()} "
+                    "on your NanoAurora machine.", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+        ], [ft.FilledButton("Done", on_click=on(self.close_share_dialog))])
+        self.refresh_sidebar()
+
+    async def copy_text(self, text: str) -> None:
+        await self.clipboard.set(text)
+        self.page.show_dialog(ft.SnackBar(ft.Text("Copied"), duration=1500))
 
     # -- Sending -----------------------------------------------------------------
 

@@ -1,0 +1,19 @@
+{
+  "providers": {
+    "device-test": { "apiKey": "test-device-token", "apiBase": "http://127.0.0.1:18435/v1" }
+  },
+  "modelPresets": {
+    "device-test": { "provider": "device-test", "model": "nanoaurora-qwen3-8b-32k", "maxTokens": 2048, "contextWindowTokens": 32768, "temperature": 0.2 }
+  },
+  "agents": { "defaults": { "modelPreset": "device-test" } },
+  "gateway": { "port": 18792 },
+  "channels": {
+    "websocket": {
+      "enabled": true,
+      "host": "127.0.0.1",
+      "port": 18766,
+      "tokenIssueSecret": "test-password",
+      "websocketRequiresToken": true
+    }
+  }
+}

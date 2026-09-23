@@ -31,7 +31,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 | Dedicated `nanobot-agent` account | Owns nothing but the agent. Anything that escapes the container lands in an empty account, not yours |
 | Rootless Podman | Root inside the container is an unprivileged user on the host |
 | One shared folder | The only host path the agent sees is the projects folder |
-| Network guard | `nanoaurora-firewall.service` loads at boot, before any user services start, and drops the agent's traffic to private, link-local, and CGNAT addresses |
+| Network guard | `nanoaurora-firewall.service` loads at boot, before any user services start, and drops the agent's traffic to private, link-local, and CGNAT addresses. The only exceptions are devices you approve with `nanoaurora compute add`, each limited to one address and port |
 | SELinux | Enforcing, and the projects folder is labeled for container use |
 | Loopback-only WebUI | Reachable only from this machine, and only with the password, until you run `nanoaurora remote on` |
 | Read-only OS | Aurora's system image can't be modified by anything the agent can reach |
@@ -55,6 +55,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 | `nanoaurora shell` | Open a shell inside the agent's container |
 | `nanoaurora password` | Show the WebUI password |
 | `nanoaurora remote on` / `off` / `status` | Let other devices on your network use the agent through the NanoAurora client or a browser, or go back to this machine only |
+| `nanoaurora compute add` / `remove` / `use` / `list` | Run the agent on a model hosted by another device. The NanoAurora client sets the device up and shows the exact `add` command; `use <name>` makes it the first choice, `use cloud` switches back |
 | `nanoaurora set-key` | Swap the OpenRouter key |
 | `nanoaurora rebuild [X.Y.Z]` | Rebuild the agent's container, optionally at a new nanobot version |
 | `nanoaurora reset` | **Delete** the agent's home (memory, sessions, settings, tools) and start fresh. Projects are kept |
