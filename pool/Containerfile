@@ -43,9 +43,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=build --chown=exo:exo /opt/exo /opt/exo
 USER exo
 WORKDIR /opt/exo
-# Nodes on the same network with the same namespace join one pool; other exo clusters don't mix in.
-ENV EXO_LIBP2P_NAMESPACE=nanoborealis PYTHONUNBUFFERED=1 HOME=/home/exo
+# Nodes on the same network with the same --namespace form one pool. exo's default namespace is
+# its version, so any node running this engine version joins (a Mac running exo too).
+# exo refuses to start while the retired EXO_LIBP2P_NAMESPACE variable is set.
+ENV PYTHONUNBUFFERED=1 HOME=/home/exo
 LABEL org.opencontainers.image.title="nanoborealis-pool" \
       org.opencontainers.image.description="NanoBorealis pool node: exo, pinned and tested (${VARIANT})"
-EXPOSE 52415
+# API (peers also probe it to map the network), zenoh links between nodes, peer discovery.
+EXPOSE 52415/tcp 52414/tcp 52413/udp
 ENTRYPOINT ["/opt/exo/.venv/bin/exo"]

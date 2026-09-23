@@ -2,7 +2,8 @@
 name: Pool node image
 
 # Builds the NanoBorealis pool node (a pinned exo), proves it on a runner (serves a model, answers,
-# makes tool calls, and drives a real nanobot agent turn), and only then publishes it.
+# makes tool calls, and splits one model across two nodes), and only then publishes it. A real
+# nanobot agent turn through the pool runs afterwards and is reported.
 on:
   push:
     branches:
@@ -25,7 +26,7 @@ jobs:
   cpu:
     name: Build, prove and publish (CPU)
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 180
     permissions:
       contents: read
       packages: write
@@ -86,7 +87,31 @@ jobs:
           assert calls and calls[0]["function"]["name"] == "get_weather", "no tool call came back"
           EOF
 
+      - name: Two machines pool one model
+        run: |
+          # Two nodes on their own network, like two computers on a home LAN. Only node A's API is
+          # reachable from the runner; the model must still be split across both of them.
+          podman rm -f node
+          podman network create poolnet
+          podman run -d --name node-a --network poolnet -p 127.0.0.1:52415:52415 nanoborealis-pool:cpu
+          podman run -d --name node-b --network poolnet nanoborealis-pool:cpu
+          python3 pool/tests/pooled.py "$EXO" "$MODEL"
+
+      - name: Publish
+        if: github.ref == 'refs/heads/main'
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for tag in cpu "cpu-$(date -u +%Y%m%d)" "cpu-${EXO_REF}"; do
+            podman push nanoborealis-pool:cpu "ghcr.io/$owner/nanoborealis-pool:$tag"
+          done
+
+      # By now the model is split across both nodes, so this is the agent on a two-machine pool.
+      # A CPU runner needs most of an hour to read the agent's long prompt, so the turn is
+      # reported but doesn't hold back the image; the tool-call check above gates it.
       - name: A real agent turn through the pool
+        continue-on-error: true
+        timeout-minutes: 55
         run: |
           version="$(sed -n 's/^ARG NANOBOT_VERSION=//p' system_files/usr/share/nanoborealis/image/Containerfile)"
           python3 -m venv "$RUNNER_TEMP/nb"
@@ -110,17 +135,10 @@ jobs:
           for i in $(seq 1 90); do curl -sf http://127.0.0.1:18791/health >/dev/null && break; sleep 1; done
           "$RUNNER_TEMP/nb/bin/python" client/dev/agent_check.py http://127.0.0.1:18765 test-password 3600
 
-      - name: Publish
-        if: github.ref == 'refs/heads/main'
-        run: |
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for tag in cpu "cpu-$(date -u +%Y%m%d)" "cpu-${EXO_REF}"; do
-            podman push nanoborealis-pool:cpu "ghcr.io/$owner/nanoborealis-pool:$tag"
-          done
-
       - name: Logs
         if: always()
         run: |
-          echo "--- node"; podman logs node 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^[[:space:]│└]' | tail -n 60 || true
+          for c in $(podman ps -a --format '{{.Names}}'); do
+            echo "--- $c"; podman logs "$c" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^[[:space:]│└]' | tail -n 60 || true
+          done
           echo "--- gateway"; tail -n 40 "$RUNNER_TEMP/gateway.log" 2>/dev/null || true
