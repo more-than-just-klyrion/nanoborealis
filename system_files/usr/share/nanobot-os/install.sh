@@ -142,8 +142,23 @@ ok "built $IMAGE with nanobot $NANOBOT_VERSION"
 say "Secrets"
 secret_exists() { as_agent podman secret inspect "$1" >/dev/null 2>&1; }
 
+# A key from the NanoBorealis Installer: saved during install, or read now from the stick
+# if it's still plugged in.
+SETUP_JSON=/var/lib/nanoborealis/setup.json
+if [ -x /usr/libexec/nanoborealis-setup-from-stick ] && ! sudo test -f "$SETUP_JSON"; then
+    sudo /usr/libexec/nanoborealis-setup-from-stick >/dev/null 2>&1 || true
+fi
+stick_key=""
+if sudo test -f "$SETUP_JSON"; then
+    stick_key="$(sudo python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("openrouter_api_key", ""))' \
+        "$SETUP_JSON" 2>/dev/null || true)"
+fi
+
 if secret_exists openrouter_api_key && [ "$RESET_KEY" -eq 0 ]; then
     ok "OpenRouter key already stored (re-run with --reset-key to replace it)"
+elif [ -n "$stick_key" ] && [ "$RESET_KEY" -eq 0 ]; then
+    printf '%s' "$stick_key" | as_agent podman secret create --replace openrouter_api_key - >/dev/null
+    ok "OpenRouter key from the NanoBorealis Installer stored as a Podman secret"
 else
     echo "    Paste the OpenRouter API key for this machine. Make it a dedicated key with"
     echo "    a low credit limit: the agent can read its own key."
@@ -153,6 +168,11 @@ else
     unset or_key
     ok "OpenRouter key stored as a Podman secret"
 fi
+if [ -n "$stick_key" ]; then
+    sudo rm -f "$SETUP_JSON"  # the key lives in the Podman secret now; don't leave a copy lying around
+    ok "removed the installer's copy of the key"
+fi
+unset stick_key
 
 webui_pw=""
 if secret_exists nanobot_webui_secret; then

@@ -9,6 +9,7 @@ dnf5 install -y nftables
 
 chmod 0755 /usr/libexec/nanobot-os-firstrun \
            /usr/libexec/nanoaurora-firewall \
+           /usr/libexec/nanoborealis-setup-from-stick \
            /usr/share/nanobot-os/install.sh \
            /usr/share/nanobot-os/nanobot-os \
            /usr/share/nanobot-os/image/entrypoint.sh
