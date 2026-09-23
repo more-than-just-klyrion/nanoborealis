@@ -29,7 +29,9 @@ from agent_link import AgentLink, AuthError, LinkError
 NARROW = 760  # below this width the chat list moves into a drawer
 READABLE = 860  # widest the conversation column gets
 SEED = ft.Colors.TEAL
-MONO = "monospace"
+# Bundled in assets/fonts (SIL OFL): Flutter doesn't resolve a generic "monospace" family, so
+# code and tool output would otherwise come out in the proportional UI font.
+MONO = "JetBrains Mono"
 PREF_ADDRESS = "nanoborealis.address"
 PREF_PASSWORD = "nanoborealis.password"
 PREF_CLIENT_ID = "nanoborealis.client_id"
@@ -70,12 +72,34 @@ def tool_title(hint: str, event: dict[str, Any] | None) -> str:
     if not event:
         return "tool"
     args = event.get("arguments")
+    name = event.get("name") or "tool"
     if isinstance(args, dict):
+        # The same short forms nanobot uses for live progress, so a chat reads the same reopened.
+        for tool, keys, template in HINTS:
+            value = next((args[k] for k in keys if isinstance(args.get(k), str) and args[k]), None)
+            if name == tool and value is not None:
+                title = template.format(value.splitlines()[0] if value else value)
+                return title if len(title) <= 140 else title[:137] + "..."
         inner = ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in args.items())
     else:
         inner = "" if args is None else str(args)
-    title = f"{event.get('name') or 'tool'}({inner})"
+    title = f"{name}({inner})"
     return title if len(title) <= 140 else title[:137] + "..."
+
+
+# nanobot's tool hint formats (nanobot/utils/tool_hints.py): tool, argument keys, template.
+HINTS = [
+    ("exec", ("command", "cmd"), "$ {}"),
+    ("read_file", ("path", "file_path"), "read {}"),
+    ("write_file", ("path", "file_path"), "write {}"),
+    ("edit_file", ("path", "file_path"), "edit {}"),
+    ("edit", ("file_path", "path"), "edit {}"),
+    ("list_dir", ("path",), "ls {}"),
+    ("grep", ("pattern",), 'grep "{}"'),
+    ("find_files", ("query", "glob", "path"), "find {}"),
+    ("web_search", ("query",), 'search "{}"'),
+    ("web_fetch", ("url",), "fetch {}"),
+]
 
 
 def clip(text: str, limit: int = 4000) -> str:
@@ -161,6 +185,7 @@ class NanoBorealisApp:
     async def start(self) -> None:
         p = self.page
         p.title = "NanoBorealis"
+        p.fonts = {MONO: "fonts/JetBrainsMono.ttf"}
         if p.window is not None and os.path.exists(os.path.join(ASSETS, "icon.ico")):
             p.window.icon = os.path.join(ASSETS, "icon.ico")  # title bar and taskbar on Windows
         p.theme_mode = ft.ThemeMode.SYSTEM
@@ -577,12 +602,18 @@ class NanoBorealisApp:
         self.page.update()
         if self.link is None:
             return
-        try:
-            await self.link.attach(chat_id)
-            thread = await self.link.load_thread(chat_id)
-        except (LinkError, AuthError, asyncio.TimeoutError) as e:
-            self.add(self.error_row(f"Could not open this chat: {e}"))
-        else:
+        thread: dict[str, Any] | None = None
+        for attempt in range(3):  # right after the agent restarts, the first try can time out
+            try:
+                await self.link.attach(chat_id)
+                thread = await self.link.load_thread(chat_id)
+                break
+            except (LinkError, AuthError, asyncio.TimeoutError) as e:
+                if attempt == 2 or isinstance(e, AuthError):
+                    self.add(self.error_row(f"Could not open this chat: {str(e) or type(e).__name__}"))
+                    break
+                await asyncio.sleep(2)
+        if thread is not None:
             if self.chat_id != chat_id:
                 return  # the user moved on while this loaded
             self.render_history(thread.get("messages") or [])
@@ -607,6 +638,14 @@ class NanoBorealisApp:
                     self.messages.controls.append(view)
             elif role == "tool":
                 events = [e for e in (m.get("toolEvents") or []) if isinstance(e, dict)]
+                edits = [e for e in (m.get("fileEdits") or []) if isinstance(e, dict) and e.get("path")]
+                if not events and edits:  # file writes are recorded as edits, not tool events
+                    for edit in edits:
+                        verb = "write" if edit.get("tool") == "write_file" else "edit"
+                        row = ToolRow(f"{verb} {edit['path']}")
+                        row.finish(f"{edit.get('status') or 'done'}: {edit['path']}", edit.get("status") == "error")
+                        self.messages.controls.append(row.tile)
+                    continue
                 for event in events or [None]:
                     row = ToolRow(tool_title("" if event else text, event))
                     result = (event or {}).get("error") or (event or {}).get("result") or ""
@@ -626,7 +665,13 @@ class NanoBorealisApp:
 
     def answer_view(self, text: str) -> tuple[ft.Control, ft.Markdown]:
         md = ft.Markdown(text, selectable=True, extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                         code_theme=ft.MarkdownCodeTheme.ATOM_ONE_DARK, auto_follow_links=True)
+                         code_theme=ft.MarkdownCodeTheme.ATOM_ONE_DARK, auto_follow_links=True,
+                         code_style_sheet=ft.MarkdownStyleSheet(
+                             code_text_style=ft.TextStyle(font_family=MONO, size=13, height=1.5),
+                             codeblock_padding=ft.Padding.symmetric(horizontal=16, vertical=14),
+                             codeblock_decoration=ft.BoxDecoration(border_radius=10)),
+                         md_style_sheet=ft.MarkdownStyleSheet(
+                             code_text_style=ft.TextStyle(font_family=MONO, size=13)))
         copy = ft.IconButton(ft.Icons.CONTENT_COPY_ROUNDED, icon_size=16, tooltip="Copy",
                              icon_color=ft.Colors.ON_SURFACE_VARIANT, on_click=on(self.copy_markdown, md))
         return ft.Column([md, ft.Row([copy], spacing=0)], spacing=0), md
@@ -833,7 +878,11 @@ class NanoBorealisApp:
 
     def set_model(self, name: Any) -> None:
         if isinstance(name, str) and name.strip():
-            self.model_text.value = name.strip()
+            full = name.strip()
+            # "nvidia/nemotron-3-ultra-550b-a55b:free" shows as "nemotron-3-ultra-550b-a55b", which
+            # leaves the chat title room on a phone; the tooltip keeps the whole name.
+            self.model_text.value = full.rsplit("/", 1)[-1].split(":", 1)[0] or full
+            self.model_chip.tooltip = full
             self.model_chip.visible = True
             self.page.update()
 
@@ -936,11 +985,12 @@ class NanoBorealisApp:
     async def open_share_dialog(self) -> None:
         if self.page.width and self.page.width < NARROW:
             await self.page.close_drawer()
-        self.share_body = ft.Column(tight=True, spacing=12, scroll=ft.ScrollMode.AUTO)
+        self.share_body = ft.Column(tight=True, spacing=12)
         self.share_actions = ft.Row(spacing=8, wrap=True, alignment=ft.MainAxisAlignment.END)
         self.share_dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Share this device's hardware", size=18, weight=ft.FontWeight.W_600),
+            scrollable=True,
             content=ft.Container(self.share_body, width=500),
             actions=[self.share_actions],
         )
@@ -1089,11 +1139,12 @@ class NanoBorealisApp:
     async def open_stick_dialog(self) -> None:
         if self.in_chat_view and self.page.width and self.page.width < NARROW:
             await self.page.close_drawer()
-        self.stick_body = ft.Column(tight=True, spacing=12, scroll=ft.ScrollMode.AUTO)
+        self.stick_body = ft.Column(tight=True, spacing=12)
         self.stick_actions = ft.Row(spacing=8, wrap=True, alignment=ft.MainAxisAlignment.END)
         self.stick_dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Make a NanoBorealis install stick", size=18, weight=ft.FontWeight.W_600),
+            scrollable=True,
             content=ft.Container(self.stick_body, width=520),
             actions=[self.stick_actions],
         )
@@ -1124,6 +1175,7 @@ class NanoBorealisApp:
         self.stick_key = ft.TextField(
             label="OpenRouter API key (optional)", password=True, can_reveal_password=True,
             helper="Saved on the stick so setup doesn't ask for it. Use a dedicated key with a low credit limit.",
+            helper_max_lines=2, expand=True,
         )
         self.stick_iso = ""
         self.stick_iso_text = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
@@ -1142,7 +1194,7 @@ class NanoBorealisApp:
             ft.Text("The stick is erased and becomes a NanoBorealis installer. Boot a computer from it to install.",
                     size=13, color=ft.Colors.ON_SURFACE_VARIANT),
             pick,
-            self.stick_key,
+            ft.Row([self.stick_key]),
             self.stick_source,
             ft.Row([ft.OutlinedButton("Choose ISO file", icon=ft.Icons.FOLDER_OPEN_ROUNDED, on_click=on(self.pick_iso)),
                     self.stick_iso_text], spacing=10),

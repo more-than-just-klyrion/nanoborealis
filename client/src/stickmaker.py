@@ -377,15 +377,35 @@ def _cli(argv: list[str]) -> int:
                        "time": time.time()}, out)
         os.replace(tmp, progress_file)
 
+    # A record of each run that outlives the progress file, for when a write fails. It holds
+    # steps and errors only, never the setup (which carries the key).
+    log_path = os.path.join(os.path.dirname(progress_file), "nanoborealis-stick-writer.log")
+
+    def log(line: str) -> None:
+        try:
+            with open(log_path, "a", encoding="utf-8") as out:
+                out.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
+        except OSError:
+            pass
+
+    def logged(phase: str, done: int, total: int, message: str, error: str = "") -> None:
+        if phase != "write" and phase != "verify" or done in (0, total):
+            log(f"{phase}: {message}{' ' + error if error else ''}")
+        report(phase, done, total, message, error)
+
+    log(f"writer started: disk {opts.get('--disk')} serial {opts.get('--serial')} source {opts.get('--source')} "
+        f"python {sys.version.split()[0]} admin {bool(ctypes.windll.shell32.IsUserAnAdmin()) if sys.platform == 'win32' else os.geteuid() == 0}")
     try:
         with open(opts["--setup-file"], encoding="utf-8") as handoff:
             setup = json.load(handoff)
         os.remove(opts["--setup-file"])  # the key doesn't stay on this computer
         disk = _find_disk(opts["--disk"], opts.get("--serial", ""))
-        write_stick(disk, opts["--source"], setup or None, report)
+        write_stick(disk, opts["--source"], setup or None, logged)
         return 0
     except Exception as e:  # report every failure to the app, which is waiting on this file
-        report("error", 0, 0, "", str(e) or type(e).__name__)
+        import traceback
+        log("failed:\n" + traceback.format_exc())
+        report("error", 0, 0, "", f"{str(e) or type(e).__name__} (details: {log_path})")
         return 1
 
 
