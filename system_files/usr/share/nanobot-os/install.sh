@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nanobot OS installer for Aurora (any Fedora Atomic host with systemd + Podman works).
+# NanoAurora agent installer (any Fedora Atomic host with systemd + Podman works).
 # Run from inside this folder as your normal user:  bash install.sh
 # Safe to re-run: it rebuilds the image and restarts the agent, keeping its data.
 set -euo pipefail
@@ -60,7 +60,7 @@ say "Agent account"
 if id "$AGENT_USER" >/dev/null 2>&1; then
     ok "$AGENT_USER already exists"
 else
-    sudo useradd --create-home --shell /usr/sbin/nologin --comment "nanobot OS agent" "$AGENT_USER"
+    sudo useradd --create-home --shell /usr/sbin/nologin --comment "NanoAurora agent" "$AGENT_USER"
     ok "created $AGENT_USER (cannot log in)"
 fi
 AGENT_UID="$(id -u "$AGENT_USER")"
@@ -83,6 +83,34 @@ done
 sudo test -S "/run/user/$AGENT_UID/bus" || die "the user manager for $AGENT_USER did not start"
 ok "lingering on; $AGENT_USER's services start at boot"
 
+# --- shared projects folder ----------------------------------------------------
+# Per-user ACLs rather than a shared group: a host group isn't visible inside the
+# agent's rootless container, so group permissions would lock the agent out of your files.
+say "Shared projects folder"
+PROJECTS="/srv/nanoaurora/projects"
+command -v setfacl >/dev/null 2>&1 || die "setfacl not found (package: acl)"
+sudo install -d -m 0755 /srv/nanoaurora
+sudo install -d -o "$AGENT_USER" -g "$AGENT_USER" -m 0770 "$PROJECTS"
+sudo setfacl -m "u:$AGENT_USER:rwx,u:$USER:rwx,m::rwx,d:u:$AGENT_USER:rwx,d:u:$USER:rwx,d:m::rwx" "$PROJECTS"
+if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+    sudo chcon -R -t container_file_t -l s0 "$PROJECTS"
+fi
+ln -sfn "$PROJECTS" "$HOME/nanoaurora-projects"
+ok "$PROJECTS (shortcut in your home: nanoaurora-projects)"
+
+# --- network guard -------------------------------------------------------------
+say "Network guard"
+if systemctl cat nanoaurora-firewall.service >/dev/null 2>&1; then
+    sudo systemctl restart nanoaurora-firewall.service
+    if sudo nft list table inet nanoaurora 2>/dev/null | grep -q skuid; then
+        ok "$AGENT_USER can reach the internet but not your local network"
+    else
+        warn "firewall rules did not load - check: systemctl status nanoaurora-firewall"
+    fi
+else
+    warn "this system has no nanoaurora-firewall service; the agent can reach your local network"
+fi
+
 as_agent() {
     ( cd / && sudo -u "$AGENT_USER" env \
         HOME="$AGENT_HOME" \
@@ -98,7 +126,7 @@ if agentctl cat nanobot.service >/dev/null 2>&1; then
 fi
 
 # --- image ---------------------------------------------------------------------
-say "Image (first build downloads about 200 MB)"
+say "Agent image (first build downloads about 500 MB)"
 BUILD="$AGENT_HOME/nanobot-os"
 sudo rm -rf "$BUILD"
 sudo install -d -o "$AGENT_USER" -g "$AGENT_USER" -m 0700 "$BUILD"
@@ -165,13 +193,20 @@ else
     cat > "$apps/nanobot-os.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=nanobot
-Comment=Open the nanobot OS agent
+Name=NanoAurora
+Comment=Open your NanoAurora agent
 Exec=xdg-open $WEBUI_URL
 Icon=internet-web-browser
 Categories=Utility;
 EOF
-    ok "added 'nanobot' to the app menu"
+    ok "added 'NanoAurora' to the app menu"
+fi
+
+if [ -f /usr/share/applications/nanoaurora-update.desktop ]; then
+    desk="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
+    mkdir -p "$desk"
+    install -m 0755 /usr/share/applications/nanoaurora-update.desktop "$desk/nanoaurora-update.desktop"
+    ok "added an 'Update NanoAurora' icon to your desktop"
 fi
 
 # --- wait for the WebUI --------------------------------------------------------
@@ -190,7 +225,8 @@ fi
 
 # --- done ----------------------------------------------------------------------
 say "Done"
-echo "    Open:      $WEBUI_URL   (or 'nanobot' in the app menu)"
+echo "    Open:      $WEBUI_URL   (or 'NanoAurora' in the app menu)"
+echo "    Projects:  ~/nanoaurora-projects   (shared with the agent)"
 if [ -n "$webui_pw" ]; then
     echo "    Password:  $webui_pw"
     echo "               save it now; show it again later with: nanobot-os password"

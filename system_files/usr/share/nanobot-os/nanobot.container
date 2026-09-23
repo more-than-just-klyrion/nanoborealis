@@ -1,8 +1,8 @@
-# Quadlet unit for the agent. install.sh copies it to
+# Quadlet unit for the NanoAurora agent. install.sh copies it to
 # ~nanobot-agent/.config/containers/systemd/, and systemd runs it as a user service.
 
 [Unit]
-Description=nanobot OS agent (gateway + WebUI)
+Description=NanoAurora agent (nanobot gateway + WebUI)
 
 [Container]
 Image=localhost/nanobot-os:latest
@@ -10,10 +10,14 @@ Pull=never
 ContainerName=nanobot
 Exec=gateway --foreground
 
-# Everything nanobot keeps lives on this volume; the container is disposable.
-Volume=nanobot-data:/home/nanobot/.nanobot
+# The agent's whole home persists: config, memory, sessions, and tools it installs there.
+# The container itself is disposable.
+Volume=nanobot-home:/home/nanobot
 
-# Maps the host agent account onto the image's uid 1000 so volume files are writable.
+# Shared with the desktop user. install.sh sets the ACLs and SELinux label on it.
+Volume=/srv/nanoaurora/projects:/home/nanobot/projects
+
+# Maps the host agent account onto the image's uid 1000 so files are owned by it.
 UserNS=keep-id:uid=1000,gid=1000
 
 # WebUI on this machine's loopback only. The password is still required.
@@ -22,13 +26,13 @@ PublishPort=127.0.0.1:8765:8765
 Secret=openrouter_api_key,type=env,target=OPENROUTER_API_KEY
 Secret=nanobot_webui_secret,type=env,target=NANOBOT_WEBUI_SECRET
 
-DropCapability=ALL
-NoNewPrivileges=true
+# No capability dropping or no-new-privileges: sudo inside the container needs both.
+# The container is rootless, so its root is still an unprivileged user on the host.
 
 [Service]
 Restart=on-failure
 RestartSec=10
-TimeoutStartSec=180
+TimeoutStartSec=600
 
 [Install]
 WantedBy=default.target

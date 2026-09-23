@@ -1,25 +1,25 @@
 ---
 name: Test agent container
 
-# Builds the agent image from the kit and starts it the way the Quadlet unit does on a
-# laptop, so a broken agent image fails here instead of during someone's first login.
+# Builds the agent image from the kit, runs it the way the Quadlet unit does on a laptop,
+# and checks the network guard, so a broken agent fails here instead of on a laptop.
 on:
   push:
     branches:
       - main
     paths:
-      - 'system_files/usr/share/nanobot-os/**'
+      - 'system_files/**'
       - '.github/workflows/test-agent.yml'
   pull_request:
     branches:
       - main
     paths:
-      - 'system_files/usr/share/nanobot-os/**'
+      - 'system_files/**'
   workflow_dispatch:
 
 jobs:
-  test:
-    name: Build and start the agent container
+  agent:
+    name: Build and run the agent container
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -30,20 +30,24 @@ jobs:
       - name: Build the agent image
         run: podman build -t nanobot-agent-test system_files/usr/share/nanobot-os/image
 
-      - name: Start it like the Quadlet unit does
+      - name: Write a launcher that mirrors the Quadlet unit
         run: |
+          mkdir -p "$RUNNER_TEMP/projects"
           printf '%s' 'sk-or-v1-placeholder-not-a-real-key' | podman secret create openrouter_api_key -
           printf '%s' 'ci-test-password' | podman secret create nanobot_webui_secret -
+          cat > "$RUNNER_TEMP/start-agent.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
           podman run -d --name nanobot \
             --userns=keep-id:uid=1000,gid=1000 \
-            --cap-drop=ALL --security-opt no-new-privileges \
-            -v nanobot-data:/home/nanobot/.nanobot \
+            -v nanobot-home:/home/nanobot \
+            -v "$RUNNER_TEMP/projects:/home/nanobot/projects" \
             -p 127.0.0.1:8765:8765 \
             --secret openrouter_api_key,type=env,target=OPENROUTER_API_KEY \
             --secret nanobot_webui_secret,type=env,target=NANOBOT_WEBUI_SECRET \
             nanobot-agent-test gateway --foreground
           code=000
-          for i in $(seq 1 60); do
+          for i in $(seq 1 90); do
             code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/ || true)"
             [ "$code" != "000" ] && break
             if [ "$(podman inspect -f '{{.State.Running}}' nanobot)" != "true" ]; then
@@ -53,10 +57,67 @@ jobs:
             sleep 2
           done
           echo "--- container log ---"
-          podman logs nanobot 2>&1 | tail -60
+          podman logs nanobot 2>&1 | tail -40
           echo "--- WebUI answered with HTTP $code ---"
           [ "$code" != "000" ]
+          EOF
+          chmod +x "$RUNNER_TEMP/start-agent.sh"
 
-      - name: Check the seeded config and skills landed in the volume
+      - name: First start
+        run: '"$RUNNER_TEMP/start-agent.sh"'
+
+      - name: Seeded config, profile, and skills are in the persistent home
         run: |
-          podman exec nanobot sh -c 'ls -la ~/.nanobot ~/.nanobot/workspace/skills && test -f ~/.nanobot/config.json'
+          podman exec nanobot sh -c 'test -f ~/.nanobot/config.json && test -f ~/.nanobot/workspace/USER.md && ls ~/.nanobot/workspace/skills'
+          podman exec nanobot sh -c 'command -v nanobot && nanobot --version'
+
+      - name: The agent has sudo inside its container
+        run: podman exec nanobot sudo -n sh -c 'id -u && apt-get --version | head -1'
+
+      - name: Files the agent writes in projects land on the host, owned by the host user
+        run: |
+          podman exec nanobot sh -c 'echo made-by-agent > ~/projects/from-agent.txt'
+          test "$(cat "$RUNNER_TEMP/projects/from-agent.txt")" = made-by-agent
+          test "$(stat -c %u "$RUNNER_TEMP/projects/from-agent.txt")" = "$(id -u)"
+
+      - name: Home and listed apt packages survive a fresh container
+        run: |
+          podman exec nanobot sh -c 'mkdir -p ~/.config/nanoaurora && echo hello > ~/.config/nanoaurora/apt-packages && touch ~/persist-marker'
+          podman rm -f nanobot
+          "$RUNNER_TEMP/start-agent.sh"
+          podman exec nanobot sh -c 'test -f ~/persist-marker && command -v hello && hello'
+
+  firewall:
+    name: Network guard keeps the agent off the LAN
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Load the rules for a stand-in agent account
+        run: |
+          command -v nft >/dev/null || sudo apt-get install -y nftables
+          sudo useradd --system --no-create-home nanobot-agent
+          sudo bash system_files/usr/libexec/nanoaurora-firewall
+          sudo nft list table inet nanoaurora
+
+      - name: The agent reaches the internet but not the local network
+        run: |
+          lan_ip="$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1)}')"
+          echo "runner address: $lan_ip"
+          case "$lan_ip" in
+            10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*) ;;
+            *) echo "runner address is not private; cannot test LAN blocking here"; exit 1 ;;
+          esac
+          python3 -m http.server 8080 --bind 0.0.0.0 >/dev/null 2>&1 &
+          sleep 1
+          curl -s -o /dev/null --max-time 5 "http://$lan_ip:8080/"
+          echo "control: the runner's own user reaches $lan_ip:8080"
+          if sudo -u nanobot-agent curl -s -o /dev/null --max-time 5 "http://$lan_ip:8080/"; then
+            echo "FAIL: the agent reached the local network"
+            exit 1
+          fi
+          echo "ok: the agent is blocked from $lan_ip"
+          sudo -u nanobot-agent curl -s -o /dev/null --max-time 20 -w 'ok: the agent reaches the internet (HTTP %{http_code})\n' https://openrouter.ai/api/v1/models

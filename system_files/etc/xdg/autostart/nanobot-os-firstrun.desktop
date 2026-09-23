@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=nanobot OS setup
-Comment=Finishes setting up nanobot OS on first login
+Name=NanoAurora setup
+Comment=Finishes setting up the NanoAurora agent on first login
 Exec=/usr/libexec/nanobot-os-firstrun
 Icon=utilities-terminal
 Terminal=false

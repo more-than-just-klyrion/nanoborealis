@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=nanobot
-Comment=Open the nanobot OS agent
+Name=NanoAurora
+Comment=Open your NanoAurora agent
 Exec=xdg-open http://127.0.0.1:8765
 Icon=internet-web-browser
 Categories=Utility;

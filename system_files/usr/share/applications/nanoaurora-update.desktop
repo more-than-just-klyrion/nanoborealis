@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Update NanoAurora
+Comment=Download the newest NanoAurora build and update your apps
+Exec=konsole --hold -p "tabtitle=Update NanoAurora" -e nanoaurora update
+Icon=system-software-update
+Terminal=false
+Categories=System;

@@ -1,91 +1,69 @@
-# nanobot OS
+# NanoAurora agent
 
-Turns a fresh **Aurora** install into an agentic workstation. nanobot runs as a sandboxed background service, its WebUI sits in your app menu, and it's wired to free Nemotron models on OpenRouter.
+This folder is the NanoAurora agent kit. On NanoAurora the setup opens by itself the first time an administrator logs in. To run it again:
 
-There's no nanobot-based distro out there, so this is one: stock Aurora plus one install script.
+```bash
+bash /usr/share/nanobot-os/install.sh
+```
 
-> **Running the nanobot OS system image?** Then this kit is already installed at `/usr/share/nanobot-os`, and the installer opens on its own the first time an administrator logs in. To run it again later: `bash /usr/share/nanobot-os/install.sh`.
+Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and memory.
 
-## What you get
+## What it sets up
 
-- **The nanobot 0.3.5 WebUI** at `http://127.0.0.1:8765`, password-protected, listed in the app menu as *nanobot*
+- **`nanobot-agent`**, an account that can't log in, owns nothing else, and runs the agent
+- **The agent:** nanobot 0.3.5 in a rootless Podman container that systemd runs through Quadlet. Its WebUI is at `http://127.0.0.1:8765`, behind a password, and in the app menu as **NanoAurora**
 - **Free Nemotron models with automatic fallback:** Ultra 550B, then Super 120B, then Lightning 30B
 - **Skills:** `code-review`, `planning`, `simplify`
-- **`nanobot-os`**, a command for running and maintaining it
+- **`/srv/nanoaurora/projects`**, shared by you and the agent, with a shortcut at `~/nanoaurora-projects`
 
-## Install
+## What the agent can and can't do
 
-1. Install Aurora and finish its first-boot setup.
-2. Create a **dedicated OpenRouter key** at https://openrouter.ai/keys and give it a **low credit limit**. The reason is under [What it does not protect against](#what-it-does-not-protect-against).
-3. Copy this `nanobot-os` folder to the machine, then run:
+| It can | It can't |
+|---|---|
+| Use `sudo` inside its container: install packages, compile, run services | Change the host operating system, or touch your files outside the projects folder |
+| Keep tools it installs in its home; keep apt packages by listing them in `~/.config/nanoaurora/apt-packages` | Reach your local network. A root-owned firewall blocks it, though DNS still works |
+| Reach the internet: OpenRouter, package mirrors, git hosts | Turn that firewall off, because it has no root on the host |
 
-   ```bash
-   cd nanobot-os
-   bash install.sh
-   ```
-
-   It asks for your sudo password and the OpenRouter key. The first run takes a few minutes and downloads about 200 MB.
-4. Open **nanobot** from the app menu and sign in with the password the installer printed.
-5. Smoke test. Paste this into a new topic:
-
-   ```
-   What model are you? Run "git --version" to confirm you have shell access.
-   ```
-
-   If it *describes* running the command instead of actually running it, the model isn't making tool calls. Switch to the `super` preset under **Settings → Models**.
-
-## How the agent is contained
+## How it's contained
 
 | Layer | What it does |
 |---|---|
-| Dedicated `nanobot-agent` account | Can't log in and owns nothing but the agent. If something escapes the container, it lands in an empty account, not yours |
+| Dedicated `nanobot-agent` account | Owns nothing but the agent. Anything that escapes the container lands in an empty account, not yours |
 | Rootless Podman | Root inside the container is an unprivileged user on the host |
-| No capabilities, `no-new-privileges` | Every Linux capability is dropped, and nothing inside can gain privileges |
-| No host folders mounted | The agent sees only its own volume, never your files |
-| SELinux | Enforcing on Aurora, and the volume is labeled for that one container |
+| One shared folder | The only host path the agent sees is the projects folder |
+| Network guard | `nanoaurora-firewall.service` loads at boot, before any user services start, and drops the agent's traffic to private, link-local, and CGNAT addresses |
+| SELinux | Enforcing, and the projects folder is labeled for container use |
 | Loopback-only WebUI | Reachable only from this machine, and only with the password |
 | Read-only OS | Aurora's system image can't be modified by anything the agent can reach |
 
-## What it does not protect against
+## What it doesn't protect against
 
-- **The agent can read its own OpenRouter key.** nanobot has to hold the key to call the API, and the shell commands the agent runs inherit it. That's why the key must be dedicated and capped. If it leaks, the loss is limited to that cap.
-- **It has full network access.** The agent can reach the internet and your LAN. nanobot's web tools block private addresses, but a `curl` from the shell doesn't. Network isolation was left out on purpose for now.
-- **Free providers may log prompts.** Anything the agent reads can end up in a provider's logs, so keep personal files and logged-in accounts off this machine.
-- **Secrets aren't encrypted at rest.** Podman stores them in a file that only `nanobot-agent` and root can read. That's safer than a config file, but it isn't encryption.
-- **None of this has been run on a real Aurora machine yet.** It was written against the nanobot 0.3.5, Podman, and Quadlet documentation. Expect to fix something on the first install. `nanobot-os logs` is the place to start.
+- **The agent can read its own OpenRouter key.** nanobot has to hold the key to call the API, and the agent's shell inherits it. Use a dedicated key with a low credit limit.
+- **Internet access is unrestricted.** The firewall stops the local network, not the internet.
+- **Free providers may log prompts.** Keep personal files and logged-in accounts off this machine.
+- **Secrets aren't encrypted at rest.** Podman keeps them in a file only `nanobot-agent` and root can read.
 
 ## Day to day
 
 | Command | Does |
 |---|---|
-| `nanobot-os open` | Open the WebUI |
-| `nanobot-os status` | Show whether the service is running |
-| `nanobot-os logs` | Follow the agent's logs |
-| `nanobot-os restart` | Restart with a fresh container |
-| `nanobot-os shell` | Open a shell in the agent's container, to see what it sees |
-| `nanobot-os password` | Show the WebUI password |
-| `nanobot-os set-key` | Swap the OpenRouter key |
-| `nanobot-os rebuild [X.Y.Z]` | Rebuild the image with the newest base-image security fixes and an optional new nanobot version |
-| `nanobot-os reset` | **Delete** memory, sessions, skills, and settings, then start fresh |
-| `nanobot-os uninstall` | Remove everything, including the `nanobot-agent` account |
+| `nanoaurora update` | Update NanoAurora and your apps to the newest build (then reboot) |
+| `nanoaurora open` | Open the WebUI |
+| `nanoaurora status` / `logs` | Show whether the agent is running, or follow its logs |
+| `nanoaurora restart` | Restart the agent in a fresh container |
+| `nanoaurora shell` | Open a shell inside the agent's container |
+| `nanoaurora password` | Show the WebUI password |
+| `nanoaurora set-key` | Swap the OpenRouter key |
+| `nanoaurora rebuild [X.Y.Z]` | Rebuild the agent's container, optionally at a new nanobot version |
+| `nanoaurora reset` | **Delete** the agent's home (memory, sessions, settings, tools) and start fresh. Projects are kept |
+| `nanoaurora uninstall` | Remove the agent and its account. Projects are kept |
 
-**The container is disposable.** nanobot's config, memory, skills, sessions, and workspace live on the `nanobot-data` volume and survive restarts and rebuilds. Anything the agent installs elsewhere in the container doesn't survive a rebuild, and may not survive a restart. The agent runs as a regular user, so it can `pip` or `uv` install into its own space but can't `apt install` system packages.
+`nanobot-os` works as a name for the same command.
+
+**The container is disposable; the home is not.** The agent's home directory, including config, memory, sessions, skills, and anything installed there, lives on the `nanobot-home` volume and survives restarts and rebuilds. Packages installed with apt disappear when the container is recreated, unless they're listed in `~/.config/nanoaurora/apt-packages`.
 
 ## Changing things
 
-- **Models:** use **Settings → Models** in the WebUI. Changes are saved to the volume.
-- **nanobot version:** `nanobot-os rebuild 0.3.6`
-- **Use the WebUI from another machine:** in `~nanobot-agent/.config/containers/systemd/nanobot.container`, change `127.0.0.1` in `PublishPort` to this machine's LAN address. Then run `sudo systemctl --user -M nanobot-agent@ daemon-reload` and `nanobot-os restart`. The password still applies.
-
-## Files
-
-| File | Role |
-|---|---|
-| `install.sh` | One-time setup. Safe to re-run, and keeps the agent's data |
-| `nanobot-os` | The management command, installed to `/usr/local/bin` |
-| `nanobot.container` | Quadlet unit that runs the container as a systemd service |
-| `image/Containerfile` | The agent image: Debian with Python 3.12 and nanobot from PyPI |
-| `image/entrypoint.sh` | Seeds the config and skills into the volume on first start |
-| `image/seed/` | The starting config (model chain plus WebUI) and the three skills |
-
-Secrets never appear in these files. The config refers to `${OPENROUTER_API_KEY}` and `${NANOBOT_WEBUI_SECRET}`, which nanobot fills in at startup from Podman secrets.
+- **Models:** **Settings → Models** in the WebUI. Changes are saved in the agent's home.
+- **nanobot version:** `nanoaurora rebuild 0.3.6`
+- **WebUI from another machine:** in `~nanobot-agent/.config/containers/systemd/nanobot.container`, change `127.0.0.1` in `PublishPort` to this machine's LAN address, run `sudo systemctl --user -M nanobot-agent@ daemon-reload`, then `nanoaurora restart`. The password still applies.

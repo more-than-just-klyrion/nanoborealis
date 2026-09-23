@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Manage the nanobot OS agent. Installed to /usr/local/bin by install.sh.
+# Manage the NanoAurora agent. Available as both `nanoaurora` and `nanobot-os`.
 # Run as your normal user; it uses sudo where it needs to.
 set -euo pipefail
 
@@ -9,8 +9,9 @@ WEBUI_URL="http://127.0.0.1:8765"
 
 usage() {
     cat <<EOF
-Usage: nanobot-os <command>
+Usage: $(basename "$0") <command>
 
+  update            update NanoAurora and your apps to the newest build (reboot to apply)
   open              open the WebUI ($WEBUI_URL)
   status            show the service status
   logs              follow the agent's logs
@@ -19,17 +20,25 @@ Usage: nanobot-os <command>
   password          show the WebUI password
   set-key           replace the OpenRouter API key
   rebuild [X.Y.Z]   rebuild the image (optionally at a new nanobot version) and restart
-  reset             DELETE the agent's memory, sessions, skills, and settings
-  uninstall         remove nanobot OS and the $AGENT_USER account
+  reset             DELETE the agent's home: memory, sessions, skills, settings, its tools
+  uninstall         remove the agent and the $AGENT_USER account (projects are kept)
 EOF
 }
 
 cmd="${1:-help}"
 case "$cmd" in
     help|-h|--help) usage; exit 0 ;;
+    update)
+        # Works even before the agent is installed; automatic updates are off by design.
+        sudo bootc upgrade
+        flatpak update -y --noninteractive || true
+        echo
+        echo "If a new NanoAurora build was downloaded, reboot to start using it: systemctl reboot"
+        echo "After rebooting, run '$(basename "$0") rebuild' to refresh the agent's container too."
+        exit 0 ;;
 esac
 
-id "$AGENT_USER" >/dev/null 2>&1 || { echo "nanobot OS is not installed ($AGENT_USER not found)" >&2; exit 1; }
+id "$AGENT_USER" >/dev/null 2>&1 || { echo "the NanoAurora agent is not installed ($AGENT_USER not found)" >&2; exit 1; }
 AGENT_UID="$(id -u "$AGENT_USER")"
 AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
 
@@ -84,13 +93,13 @@ case "$cmd" in
         agentctl restart nanobot.service
         echo "rebuilt with nanobot $version; agent restarted" ;;
     reset)
-        confirm "This deletes the agent's memory, sessions, skills, and settings." || exit 1
+        confirm "This deletes the agent's home: memory, sessions, skills, settings, and tools it installed. The shared projects folder is kept." || exit 1
         agentctl stop nanobot.service
-        as_agent podman volume rm nanobot-data
+        as_agent podman volume rm nanobot-home
         agentctl start nanobot.service
         echo "reset; config and skills re-seeded from the image" ;;
     uninstall)
-        confirm "This removes the agent, its data, its image, its secrets, and the $AGENT_USER account." || exit 1
+        confirm "This removes the agent, its data, its image, its secrets, and the $AGENT_USER account. /srv/nanoaurora/projects is kept." || exit 1
         agentctl stop nanobot.service 2>/dev/null || true
         sudo rm -f "$AGENT_HOME/.config/containers/systemd/nanobot.container"
         agentctl daemon-reload 2>/dev/null || true
@@ -105,7 +114,7 @@ case "$cmd" in
         [ "$removed" -eq 1 ] || { echo "could not remove $AGENT_USER; run: sudo userdel --remove $AGENT_USER" >&2; exit 1; }
         rm -f "$HOME/.local/share/applications/nanobot-os.desktop"
         sudo rm -f /usr/local/bin/nanobot-os
-        echo "nanobot OS removed" ;;
+        echo "NanoAurora agent removed" ;;
     *)
         echo "unknown command: $cmd" >&2
         usage >&2

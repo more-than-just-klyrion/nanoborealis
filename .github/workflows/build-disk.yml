@@ -42,7 +42,7 @@ jobs:
       matrix:
         disk-type: ["anaconda-iso"]
     permissions:
-      contents: read
+      contents: write
       packages: read
       id-token: write
 
@@ -104,6 +104,63 @@ jobs:
           compression-level: 0
           overwrite: true
       
+      # GitHub caps release files at 2 GiB, so the ISO is published in parts, with
+      # checksums and the commands to rejoin them in the release notes.
+      - name: Publish the ISO as a GitHub release
+        if: github.event_name == 'workflow_dispatch' && matrix.disk-type == 'anaconda-iso'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUT_DIR: ${{ steps.build.outputs.output-directory }}
+        run: |
+          set -euo pipefail
+          iso="$(find "$OUT_DIR" -name '*.iso' | head -n 1)"
+          [ -n "$iso" ] || { echo "no ISO found in $OUT_DIR"; exit 1; }
+          day="$(date -u +%Y%m%d)"
+          tag="nanoaurora-${day}-$(date -u +%H%M)"
+          name="NanoAurora-${day}-x86_64.iso"
+          mkdir -p release
+          echo "$(sha256sum "$iso" | cut -d' ' -f1)  $name" > "release/$name.sha256"
+          split -b 1900M -d -a 1 "$iso" "release/$name.part"
+          cd release
+          parts=( "$name".part* )
+          sha256sum "${parts[@]}" > SHA256SUMS-parts
+          join_windows="copy /b $(printf '%s + ' "${parts[@]}" | sed 's/ + $//') $name"
+          {
+            echo "NanoAurora installer, built $(date -u +%Y-%m-%d) from \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}:latest\`."
+            echo
+            echo "## Download"
+            echo
+            echo "GitHub limits release files to 2 GB, so the ISO comes in ${#parts[@]} parts. Download every \`.part\` file and \`$name.sha256\` into one folder, then join them."
+            echo
+            echo "**Windows** (Command Prompt, in that folder):"
+            echo
+            echo '```'
+            echo "$join_windows"
+            echo "certutil -hashfile $name SHA256"
+            echo '```'
+            echo
+            echo "**Linux / macOS:**"
+            echo
+            echo '```'
+            echo "cat $name.part* > $name"
+            echo "sha256sum -c $name.sha256    # macOS: shasum -a 256 -c $name.sha256"
+            echo '```'
+            echo
+            echo "The hash must match \`$name.sha256\`. Then write the ISO to a USB stick with Fedora Media Writer, Rufus, or balenaEtcher."
+            echo
+            echo "## Install"
+            echo
+            echo "1. Boot the stick and run the installer. When you create your account, tick **Make this user administrator**."
+            echo "2. Log in. The NanoAurora agent setup opens by itself; have a dedicated OpenRouter API key with a low credit limit ready."
+            echo "3. Open **NanoAurora** from the app menu."
+            echo
+            echo "If the machine won't boot with Secure Boot on: disable it, boot, run \`ujust enroll-secure-boot-key\` (password \`universalblue\`), reboot, enroll the key, then turn Secure Boot back on."
+            echo
+            echo "Updates are opt-in: run \`nanoaurora update\` whenever you want the newest build."
+          } > notes.md
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "NanoAurora ${day}" --notes-file notes.md \
+            "${parts[@]}" "$name.sha256" SHA256SUMS-parts
+
       - name: Upload to S3
         if: inputs.upload-to-s3 == true && github.event_name != 'pull_request'
         shell: bash
