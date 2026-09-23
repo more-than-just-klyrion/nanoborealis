@@ -58,6 +58,7 @@ jobs:
         run: |
           [ -n "$REVISION" ] || { echo "could not tell which commit this build came from"; exit 1; }
           sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$REVISION" --jq .sha)"
+          echo "SHA=$sha" >> "$GITHUB_ENV"
           # Only the build and the test suites gate a release; experiments and ISO builds don't.
           runs="$(gh run list --repo "$GITHUB_REPOSITORY" --commit "$sha" --json name,conclusion,status \
                   --jq '.[] | select(.name == "Build container image" or .name == "Test agent container" or .name == "Test client")
@@ -69,8 +70,11 @@ jobs:
           fi
           echo "$runs" | grep -q "^Build container image" || { echo "no finished image build for $sha"; exit 1; }
 
+      # With the checks from the build's own commit: newer checks expect newer builds.
       - name: Check the image itself
         run: |
+          git fetch --quiet --depth=1 origin "$SHA"
+          git checkout --quiet FETCH_HEAD -- tests
           podman pull "$IMAGE@$DIGEST"
           podman run --rm --entrypoint /usr/bin/bash -v "$PWD/tests:/tests:ro" "$IMAGE@$DIGEST" /tests/image-checks.sh
 
