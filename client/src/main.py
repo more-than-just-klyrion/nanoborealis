@@ -41,17 +41,12 @@ SUGGESTIONS = [
 ]
 
 
+ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+
+
 def logo(size: float) -> ft.Control:
-    return ft.Container(
-        width=size,
-        height=size,
-        border_radius=size * 0.3,
-        gradient=ft.LinearGradient(
-            colors=["#2DD4BF", "#8B5CF6"], begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT
-        ),
-        alignment=ft.Alignment.CENTER,
-        content=ft.Icon(ft.Icons.AUTO_AWESOME, color=ft.Colors.WHITE, size=size * 0.55),
-    )
+    """The NanoBorealis star on its night-sky tile (rendered by branding/make-icons.py)."""
+    return ft.Image(src="icon.png", width=size, height=size, fit=ft.BoxFit.CONTAIN)
 
 
 def short_time(value: Any) -> str:
@@ -166,6 +161,8 @@ class NanoBorealisApp:
     async def start(self) -> None:
         p = self.page
         p.title = "NanoBorealis"
+        if p.window is not None and os.path.exists(os.path.join(ASSETS, "icon.ico")):
+            p.window.icon = os.path.join(ASSETS, "icon.ico")  # title bar and taskbar on Windows
         p.theme_mode = ft.ThemeMode.SYSTEM
         p.theme = ft.Theme(color_scheme_seed=SEED)
         p.dark_theme = ft.Theme(color_scheme_seed=SEED)
@@ -1312,4 +1309,4 @@ if __name__ == "__main__":
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
-    ft.run(main)
+    ft.run(main, assets_dir=ASSETS)

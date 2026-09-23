@@ -45,6 +45,14 @@ def main() -> int:
     canvas.alpha_composite(star, (60, 60))
     canvas.save(OUT / "plymouth-watermark.png")
     print("icons written to", OUT)
+
+    # The app: the star on its night-sky tile, in the window, the title bar and the taskbar.
+    assets = HERE.parent / "client" / "src" / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    app = (HERE / "nanoborealis.svg").read_text(encoding="utf-8")
+    render(app, 512).save(assets / "icon.png")
+    render(app, 256).save(assets / "icon.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    print("app icons written to", assets)
     return 0
 
 
