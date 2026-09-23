@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=NanoBorealis setup
+Comment=Finishes setting up the NanoBorealis agent on first login
+Exec=/usr/libexec/nanoborealis-firstrun
+Icon=utilities-terminal
+Terminal=false
+NoDisplay=true
+X-KDE-autostart-phase=2

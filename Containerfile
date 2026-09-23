@@ -1,4 +1,4 @@
-# nanobot OS: Aurora with a sandboxed nanobot agent built in.
+# NanoBorealis: Aurora with a sandboxed nanobot agent built in.
 # Build scripts sit in a throwaway stage so they don't end up in the image.
 FROM scratch AS ctx
 COPY build_files /

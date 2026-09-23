@@ -1,4 +1,4 @@
-"""Runs a local model on this device for the NanoAurora agent, with the owner's consent.
+"""Runs a local model on this device for the NanoBorealis agent, with the owner's consent.
 
 Ollama does the model work. This module picks the most capable model that fits the
 device's memory, checks that it's fast enough, and serves it to the agent through a relay
@@ -24,7 +24,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-OLLAMA_URL = os.environ.get("NANOAURORA_OLLAMA_URL", "http://127.0.0.1:11434")
+OLLAMA_URL = (os.environ.get("NANOBOREALIS_OLLAMA_URL") or os.environ.get("NANOAURORA_OLLAMA_URL")
+              or "http://127.0.0.1:11434")
 RELAY_PORT = 11435
 MIN_GEN_TPS = 10.0  # tokens/s while writing; slower than this feels broken in an agent
 MIN_PROMPT_TPS = 150.0  # tokens/s while reading; agent prompts run to thousands of tokens
@@ -271,7 +272,7 @@ def pull(tag: str, progress: Callable[[float, str], None]) -> None:
 
 
 def served_name(plan: Plan) -> str:
-    return f"nanoaurora-{plan.model.tag.replace(':', '-')}-{plan.context // 1024}k"
+    return f"nanoborealis-{plan.model.tag.replace(':', '-')}-{plan.context // 1024}k"
 
 
 def create_served_model(plan: Plan) -> str:
@@ -290,7 +291,7 @@ def create_served_model(plan: Plan) -> str:
 
 def benchmark(name: str) -> tuple[float, float]:
     """Returns (prompt tokens/s, generated tokens/s) for a realistic agent-sized prompt."""
-    prompt = ("NanoAurora benchmark. " + "The agent reads a long system prompt with tools and notes. " * 120
+    prompt = ("NanoBorealis benchmark. " + "The agent reads a long system prompt with tools and notes. " * 120
               + "\nReply with one short sentence.")
     with _ollama("POST", "/api/generate", {"model": name, "prompt": prompt, "stream": False, "think": False,
                                            "options": {"num_predict": 64, "temperature": 0}}, timeout=900) as r:
@@ -449,5 +450,5 @@ class Relay:
 
 
 def host_command(name: str, address: str, token: str, served: str, port: int = RELAY_PORT) -> str:
-    """What to run on the NanoAurora machine to let the agent use this device."""
-    return f"nanoaurora compute add {name} http://{address}:{port}/v1 {token} {served}"
+    """What to run on the NanoBorealis machine to let the agent use this device."""
+    return f"nanoborealis compute add {name} http://{address}:{port}/v1 {token} {served}"

@@ -1,0 +1,101 @@
+---
+name: Promote a build to stable
+
+# Installed systems and the installer ISO follow :stable, and this is the only way a build gets
+# there: by hand, after it has run on a testing machine. It re-checks the exact build, confirms
+# its commit's test runs passed, then tags that digest stable. Systems still following the old
+# name (nanobot-os:latest) get the same build, which moves them to the new name.
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Tag or digest to promote (default: the newest testing build)"
+        required: false
+        default: "testing"
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Check and promote
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    env:
+      SOURCE: ${{ inputs.source }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Log in to GHCR
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "IMAGE=ghcr.io/$owner/nanoborealis" >> "$GITHUB_ENV"
+          echo "LEGACY_IMAGE=ghcr.io/$owner/nanobot-os" >> "$GITHUB_ENV"
+          echo "${{ secrets.GITHUB_TOKEN }}" | skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Resolve the build
+        run: |
+          case "$SOURCE" in sha256:*) ref="$IMAGE@$SOURCE" ;; *) ref="$IMAGE:$SOURCE" ;; esac
+          digest="$(skopeo inspect --format '{{.Digest}}' "docker://$ref")"
+          revision="$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.revision"}}' "docker://$IMAGE@$digest")"
+          version="$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.version"}}' "docker://$IMAGE@$digest")"
+          [ -n "$revision" ] && [ "$revision" != "<no value>" ] || revision="$(echo "$version" | sed -n 's/.*-\([0-9a-f]\{7,\}\)$/\1/p')"
+          echo "build: $ref -> $digest ($version, commit $revision)"
+          echo "DIGEST=$digest" >> "$GITHUB_ENV"
+          echo "REVISION=$revision" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Its commit's tests passed
+        run: |
+          [ -n "$REVISION" ] || { echo "could not tell which commit this build came from"; exit 1; }
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$REVISION" --jq .sha)"
+          # Only the build and the test suites gate a release; experiments and ISO builds don't.
+          runs="$(gh run list --repo "$GITHUB_REPOSITORY" --commit "$sha" --json name,conclusion,status \
+                  --jq '.[] | select(.name == "Build container image" or .name == "Test agent container" or .name == "Test client")
+                        | "\(.name)\t\(.status)\t\(.conclusion)"')"
+          echo "$runs"
+          if echo "$runs" | awk -F'\t' '$2 != "completed" || ($3 != "success" && $3 != "skipped")' | grep -q .; then
+            echo "Some runs for $sha are unfinished or failed; not promoting."
+            exit 1
+          fi
+          echo "$runs" | grep -q "^Build container image" || { echo "no finished image build for $sha"; exit 1; }
+
+      - name: Check the image itself
+        run: |
+          podman pull "$IMAGE@$DIGEST"
+          podman run --rm --entrypoint /usr/bin/bash -v "$PWD/tests:/tests:ro" "$IMAGE@$DIGEST" /tests/image-checks.sh
+
+      - name: Tag it stable
+        run: |
+          skopeo copy --all "docker://$IMAGE@$DIGEST" "docker://$IMAGE:stable"
+          skopeo copy --all "docker://$IMAGE@$DIGEST" "docker://$IMAGE:stable-$(date -u +%Y%m%d)"
+          echo "stable is now $DIGEST ($VERSION)"
+
+      - name: Keep systems on the old name updating
+        run: |
+          if skopeo copy --all "docker://$IMAGE@$DIGEST" "docker://$LEGACY_IMAGE:latest"; then
+            echo "LEGACY_OK=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::could not publish to $LEGACY_IMAGE; systems on the old name must run: sudo bootc switch $IMAGE:stable"
+          fi
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.2'
+
+      - name: Sign the build under the old name too
+        if: env.LEGACY_OK == '1'
+        env:
+          COSIGN_EXPERIMENTAL: false
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+        run: |
+          cosign login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+          cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY "$LEGACY_IMAGE@$DIGEST"

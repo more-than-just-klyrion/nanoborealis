@@ -1,11 +1,11 @@
-# Quadlet unit for the NanoAurora agent. install.sh copies it to
+# Quadlet unit for the NanoBorealis agent. install.sh copies it to
 # ~nanobot-agent/.config/containers/systemd/, and systemd runs it as a user service.
 
 [Unit]
-Description=NanoAurora agent (nanobot gateway + WebUI)
+Description=NanoBorealis agent (nanobot gateway + WebUI)
 
 [Container]
-Image=localhost/nanobot-os:latest
+Image=localhost/nanoborealis-agent:latest
 Pull=never
 ContainerName=nanobot
 Exec=gateway --foreground
@@ -15,7 +15,7 @@ Exec=gateway --foreground
 Volume=nanobot-home:/home/nanobot
 
 # Shared with the desktop user. install.sh sets the ACLs and SELinux label on it.
-Volume=/srv/nanoaurora/projects:/home/nanobot/projects
+Volume=/srv/nanoborealis/projects:/home/nanobot/projects
 
 # Maps the host agent account onto the image's uid 1000 so files are owned by it.
 UserNS=keep-id:uid=1000,gid=1000

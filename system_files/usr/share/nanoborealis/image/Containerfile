@@ -1,4 +1,4 @@
-# NanoAurora agent image: nanobot from the pinned PyPI release on the same base the
+# NanoBorealis agent image: nanobot from the pinned PyPI release on the same base the
 # official nanobot image uses. The agent runs as the unprivileged user "nanobot" with
 # passwordless sudo inside the container, so it can install and build anything in its
 # own box while having no rights on the host.

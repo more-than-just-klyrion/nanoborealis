@@ -20,7 +20,7 @@ import os
 import sys
 import urllib.request
 
-os.environ.setdefault("NANOAURORA_OLLAMA_URL", "http://127.0.0.1:18434")
+os.environ.setdefault("NANOBOREALIS_OLLAMA_URL", "http://127.0.0.1:18434")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import compute  # noqa: E402

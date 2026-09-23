@@ -1,0 +1,26 @@
+#!/usr/bin/bash
+# Opens the NanoBorealis agent setup in a terminal at login: once, and only for administrators.
+set -u
+
+marker="${XDG_STATE_HOME:-$HOME/.local/state}/nanoborealis/firstrun-done"
+
+if [ "${1:-}" = "--run" ]; then
+    cd /usr/share/nanoborealis || exit 1
+    if bash install.sh; then
+        mkdir -p "$(dirname "$marker")" && touch "$marker"
+        echo
+        echo "NanoBorealis is ready. Open 'NanoBorealis' from the app menu. You can close this window."
+    else
+        echo
+        echo "Setup didn't finish. It will open again at your next login, or run it any time with:"
+        echo "  bash /usr/share/nanoborealis/install.sh"
+    fi
+    exit 0
+fi
+
+[ -e "$marker" ] && exit 0
+# Set up under an earlier name: already done, don't ask again.
+[ -e "${XDG_STATE_HOME:-$HOME/.local/state}/nanobot-os/firstrun-done" ] && exit 0
+id -nG | tr ' ' '\n' | grep -qx wheel || exit 0
+
+exec konsole --hold -p tabtitle="NanoBorealis setup" -e /usr/libexec/nanoborealis-firstrun --run

@@ -26,7 +26,7 @@ on:
 env:
   IMAGE_NAME: ${{ github.event.repository.name }} # output of build.yml, keep in sync
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
-  DEFAULT_TAG: "latest"
+  DEFAULT_TAG: "stable"  # installer ISOs carry the stable channel
   BIB_IMAGE: "quay.io/centos-bootc/bootc-image-builder:latest"
 
 concurrency:
@@ -97,7 +97,7 @@ jobs:
         if: inputs.upload-to-s3 != true && github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nanobot-os-${{ matrix.disk-type }}
+          name: nanoborealis-${{ matrix.disk-type }}
           path: ${{ steps.build.outputs.output-directory }}
           if-no-files-found: error
           retention-days: 0
@@ -116,8 +116,8 @@ jobs:
           iso="$(find "$OUT_DIR" -name '*.iso' | head -n 1)"
           [ -n "$iso" ] || { echo "no ISO found in $OUT_DIR"; exit 1; }
           day="$(date -u +%Y%m%d)"
-          tag="nanoaurora-${day}-$(date -u +%H%M)"
-          name="NanoAurora-${day}-x86_64.iso"
+          tag="nanoborealis-${day}-$(date -u +%H%M)"
+          name="NanoBorealis-${day}-x86_64.iso"
           mkdir -p release
           echo "$(sha256sum "$iso" | cut -d' ' -f1)  $name" > "release/$name.sha256"
           split -b 1900M -d -a 1 "$iso" "release/$name.part"
@@ -126,7 +126,7 @@ jobs:
           sha256sum "${parts[@]}" > SHA256SUMS-parts
           join_windows="copy /b $(printf '%s + ' "${parts[@]}" | sed 's/ + $//') $name"
           {
-            echo "NanoAurora installer, built $(date -u +%Y-%m-%d) from \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}:latest\`."
+            echo "NanoBorealis installer, built $(date -u +%Y-%m-%d) from \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}:stable\`."
             echo
             echo "## Download"
             echo
@@ -151,14 +151,14 @@ jobs:
             echo "## Install"
             echo
             echo "1. Boot the stick and run the installer. When you create your account, tick **Make this user administrator**."
-            echo "2. Log in. The NanoAurora agent setup opens by itself; have a dedicated OpenRouter API key with a low credit limit ready."
-            echo "3. Open **NanoAurora** from the app menu."
+            echo "2. Log in. The NanoBorealis agent setup opens by itself; have a dedicated OpenRouter API key with a low credit limit ready."
+            echo "3. Open **NanoBorealis** from the app menu."
             echo
             echo "If the machine won't boot with Secure Boot on: disable it, boot, run \`ujust enroll-secure-boot-key\` (password \`universalblue\`), reboot, enroll the key, then turn Secure Boot back on."
             echo
-            echo "Updates are opt-in: run \`nanoaurora update\` whenever you want the newest build."
+            echo "Updates are opt-in: run \`nanoborealis update\` whenever you want the newest build."
           } > notes.md
-          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "NanoAurora ${day}" --notes-file notes.md \
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "NanoBorealis ${day}" --notes-file notes.md \
             "${parts[@]}" "$name.sha256" SHA256SUMS-parts
 
       - name: Upload to S3

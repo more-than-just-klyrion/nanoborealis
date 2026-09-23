@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=NanoAurora setup
-Comment=Finishes setting up the NanoAurora agent on first login
-Exec=/usr/libexec/nanobot-os-firstrun
-Icon=utilities-terminal
-Terminal=false
-NoDisplay=true
-X-KDE-autostart-phase=2

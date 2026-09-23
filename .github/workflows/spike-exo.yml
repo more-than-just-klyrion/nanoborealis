@@ -2,7 +2,7 @@
 name: Spike - exo as an agent backend
 
 # An experiment, run by hand: can an exo cluster (pooled inference across devices) drive
-# the NanoAurora agent? Builds upstream exo on a Linux runner (CPU), serves a small model,
+# the NanoBorealis agent? Builds upstream exo on a Linux runner (CPU), serves a small model,
 # then checks plain chat, tool calls, and a real nanobot turn that has to use a tool.
 on:
   workflow_dispatch:
@@ -155,7 +155,7 @@ jobs:
 
       - name: The agent on exo (real nanobot turn that must use a tool)
         run: |
-          version="$(sed -n 's/^ARG NANOBOT_VERSION=//p' system_files/usr/share/nanobot-os/image/Containerfile)"
+          version="$(sed -n 's/^ARG NANOBOT_VERSION=//p' system_files/usr/share/nanoborealis/image/Containerfile)"
           python3 -m venv "$RUNNER_TEMP/nb"
           "$RUNNER_TEMP/nb/bin/pip" install --quiet "nanobot-ai==$version" "websockets>=13"
           mkdir -p "$RUNNER_TEMP/gw"

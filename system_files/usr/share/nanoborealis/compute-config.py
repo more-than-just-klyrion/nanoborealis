@@ -1,6 +1,6 @@
 """Adds, removes, or selects a compute device in the agent's nanobot config.
 
-`nanoaurora compute` pipes this into the agent's container, where it runs as the agent,
+`nanoborealis compute` pipes this into the agent's container, where it runs as the agent,
 so the config keeps its owner. nanobot notices the change without a restart.
 
     python3 - add <name> <url> <token> <model> | remove <name> | use <name>|cloud | list

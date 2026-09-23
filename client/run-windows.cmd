@@ -1,10 +1,10 @@
 @echo off
-rem Opens the NanoAurora client. The first run sets up its own Python environment.
+rem Opens the NanoBorealis client. The first run sets up its own Python environment.
 setlocal
-set "VENV=%LOCALAPPDATA%\NanoAurora\client-venv"
+set "VENV=%LOCALAPPDATA%\NanoBorealis\client-venv"
 if exist "%VENV%\Scripts\pythonw.exe" goto :run
 
-echo Setting up the NanoAurora client. This happens once and takes a minute...
+echo Setting up the NanoBorealis client. This happens once and takes a minute...
 py -3 -m venv "%VENV%" 2>nul || python -m venv "%VENV%" || goto :fail
 "%VENV%\Scripts\python.exe" -m pip install --quiet --disable-pip-version-check "flet[desktop]==1.0.1" "websockets>=13" || goto :fail
 rem The first launch downloads Flet's window runtime; run it here so the progress shows.

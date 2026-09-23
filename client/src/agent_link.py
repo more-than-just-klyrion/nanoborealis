@@ -1,4 +1,4 @@
-"""Talks to a NanoAurora agent over the nanobot gateway's WebUI protocol.
+"""Talks to a NanoBorealis agent over the nanobot gateway's WebUI protocol.
 
 Same flow as nanobot's own WebUI: GET /webui/bootstrap with the WebUI password returns a
 one-time WebSocket token and a short-lived REST token, then typed JSON envelopes travel
@@ -71,7 +71,7 @@ def _get_json(url: str, bearer: str, timeout: float = 15) -> Any:
         reason = getattr(e, "reason", e)
         raise LinkError(f"Cannot reach the agent: {reason}") from e
     except json.JSONDecodeError as e:
-        raise LinkError("The agent's answer was not JSON. Is this a NanoAurora address?") from e
+        raise LinkError("The agent's answer was not JSON. Is this a NanoBorealis address?") from e
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,7 @@ class AgentLink:
         self.base_url = normalize_address(address)
         self._password = password
         self._on_event = on_event
-        self.client_id = client_id or f"nanoaurora-client-{uuid.uuid4().hex[:12]}"
+        self.client_id = client_id or f"nanoborealis-client-{uuid.uuid4().hex[:12]}"
         self.model_name: str | None = None
         # The chat the UI is showing; re-attached after every reconnect so replies keep arriving.
         self.chat_id: str | None = None
@@ -211,7 +211,7 @@ class AgentLink:
         try:
             await self._on_event(event)
         except Exception as e:  # a UI bug must not take the connection down
-            print(f"nanoaurora-client: event handler failed on {event.get('event')}: {e!r}")
+            print(f"nanoborealis-client: event handler failed on {event.get('event')}: {e!r}")
 
     async def _send(self, envelope: dict[str, Any]) -> None:
         ws = self._ws

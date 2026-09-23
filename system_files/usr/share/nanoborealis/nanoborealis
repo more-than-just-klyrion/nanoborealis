@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
-# Manage the NanoAurora agent. Available as both `nanoaurora` and `nanobot-os`.
+# Manage NanoBorealis and its agent. `nanoaurora` and `nanobot-os` are older names for it.
 # Run as your normal user; it uses sudo where it needs to.
 set -euo pipefail
 
 AGENT_USER="nanobot-agent"
-IMAGE="localhost/nanobot-os:latest"
+IMAGE="localhost/nanoborealis-agent:latest"
 WEBUI_URL="http://127.0.0.1:8765"
+OS_IMAGE="ghcr.io/more-than-just-klyrion/nanoborealis"
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") <command>
 
-  update            update NanoAurora and your apps to the newest build (reboot to apply)
+  update [--testing] [--yes]
+                    check for a newer NanoBorealis build, then download it and your app updates
+                    (reboot to apply). --testing follows the testing channel instead of stable.
+  rollback          go back to the build you ran before the last update (reboot to apply)
+  version           show which build is running and which channel it follows
   open              open the WebUI ($WEBUI_URL)
   status            show the service status
   logs              follow the agent's logs
   restart           restart the agent (fresh container, same memory and settings)
   shell             open a shell inside the agent's container
   password          show the WebUI password
-  remote on|off     let other devices on your network use the agent (NanoAurora client, browser)
+  remote on|off     let other devices on your network use the agent (NanoBorealis client, browser)
   compute ...       run the agent on models hosted by your other devices: add, remove, use, list
   set-key           replace the OpenRouter API key
   rebuild [X.Y.Z]   rebuild the image (optionally at a new nanobot version) and restart
@@ -27,20 +32,64 @@ Usage: $(basename "$0") <command>
 EOF
 }
 
+tracked_image() {
+    # The image `bootc upgrade` follows, from bootc's own status.
+    { sudo bootc status --format=json 2>/dev/null || sudo bootc status --json 2>/dev/null; } \
+        | python3 -c 'import json, sys; print(((json.load(sys.stdin).get("spec") or {}).get("image") or {}).get("image", ""))' \
+          2>/dev/null || true
+}
+
 cmd="${1:-help}"
 case "$cmd" in
     help|-h|--help) usage; exit 0 ;;
     update)
-        # Works even before the agent is installed; automatic updates are off by design.
-        sudo bootc upgrade
+        # Works even before the agent is installed. Updates never happen on their own: builds
+        # reach the stable channel only after they pass testing, and only when you run this.
+        channel=stable; assume_yes=0
+        for arg in "${@:2}"; do
+            case "$arg" in
+                --testing) channel=testing ;;
+                --yes|-y) assume_yes=1 ;;
+                *) echo "unknown option: $arg" >&2; exit 2 ;;
+            esac
+        done
+        want="$OS_IMAGE:$channel"
+        tracked="$(tracked_image)"
+        if [ "$tracked" != "$want" ]; then
+            # A new channel, or a system still following an earlier name: switch the tracked image.
+            echo "This system follows ${tracked:-an unknown image}; updates will come from $want."
+            action=(bootc switch --transport registry "$want")
+        else
+            echo "Checking $want for a newer build..."
+            check="$(sudo bootc upgrade --check 2>&1 || true)"
+            if ! grep -q "Update available for:" <<<"$check"; then
+                echo "NanoBorealis is up to date."
+                flatpak update -y --noninteractive || true
+                exit 0
+            fi
+            echo "$check"  # version, digest, and how much would download
+            action=(bootc upgrade)
+        fi
+        if [ "$assume_yes" -eq 0 ]; then
+            read -r -p "Download it now? It takes effect after a reboot, and the current build stays in the boot menu. [y/N] " reply
+            [[ "$reply" =~ ^[Yy] ]] || { echo "Nothing changed."; exit 0; }
+        fi
+        sudo "${action[@]}"
         flatpak update -y --noninteractive || true
         echo
-        echo "If a new NanoAurora build was downloaded, reboot to start using it: systemctl reboot"
-        echo "After rebooting, run '$(basename "$0") rebuild' to refresh the agent's container too."
+        echo "Reboot to start the new build: systemctl reboot"
+        echo "If anything misbehaves, pick the previous entry in the boot menu, or run: $(basename "$0") rollback"
+        exit 0 ;;
+    rollback)
+        sudo bootc rollback
+        echo "Reboot to go back to the previous build: systemctl reboot"
+        exit 0 ;;
+    version)
+        sudo bootc status
         exit 0 ;;
 esac
 
-id "$AGENT_USER" >/dev/null 2>&1 || { echo "the NanoAurora agent is not installed ($AGENT_USER not found)" >&2; exit 1; }
+id "$AGENT_USER" >/dev/null 2>&1 || { echo "the NanoBorealis agent is not installed ($AGENT_USER not found)" >&2; exit 1; }
 AGENT_UID="$(id -u "$AGENT_USER")"
 AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
 
@@ -76,7 +125,7 @@ case "$cmd" in
         echo ;;
     remote)
         quadlet="$AGENT_HOME/.config/containers/systemd/nanobot.container"
-        sudo test -f "$quadlet" || { echo "the agent's service file is missing; reinstall with: bash /usr/share/nanobot-os/install.sh" >&2; exit 1; }
+        sudo test -f "$quadlet" || { echo "the agent's service file is missing; reinstall with: bash /usr/share/nanoborealis/install.sh" >&2; exit 1; }
         firewalld_port() {  # add|remove; no-op when firewalld isn't running
             if sudo firewall-cmd --state >/dev/null 2>&1; then
                 sudo firewall-cmd --quiet --permanent "--$1-port=8765/tcp" || true
@@ -112,10 +161,10 @@ case "$cmd" in
                 exit 2 ;;
         esac ;;
     compute)
-        # Devices share a model through the NanoAurora client, which shows the `add` command
+        # Devices share a model through the NanoBorealis client, which shows the `add` command
         # to run here. Each one gets a firewall exception for its own address and port only.
-        dir=/etc/nanoaurora/compute.d
-        in_agent() { as_agent podman exec -i nanobot python3 - "$@" < /usr/share/nanobot-os/compute-config.py; }
+        dir=/etc/nanoborealis/compute.d
+        in_agent() { as_agent podman exec -i nanobot python3 - "$@" < /usr/share/nanoborealis/compute-config.py; }
         name_re='^[a-z0-9][a-z0-9-]{0,23}$'
         case "${2:-list}" in
             add)
@@ -124,13 +173,13 @@ case "$cmd" in
                 if [[ ! "$name" =~ $name_re ]] || [[ ! "$token" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
                     || [[ ! "$model" =~ ^[A-Za-z0-9._:-]{1,80}$ ]] || [[ ! "$url" =~ $url_re ]]; then
                     echo "usage: $(basename "$0") compute add <name> http://<device-address>:<port>/v1 <token> <model>" >&2
-                    echo "The NanoAurora client shows this command, filled in, when you share a device." >&2
+                    echo "The NanoBorealis client shows this command, filled in, when you share a device." >&2
                     exit 2
                 fi
                 ip="${BASH_REMATCH[1]}"; port="${BASH_REMATCH[3]}"
                 sudo install -d -m 0755 "$dir"
                 printf 'ip=%s\nport=%s\n' "$ip" "$port" | sudo tee "$dir/$name" >/dev/null
-                sudo systemctl restart nanoaurora-firewall.service
+                sudo systemctl restart nanoborealis-firewall.service
                 in_agent add "$name" "$url" "$token" "$model"
                 echo "The agent can now reach $name at $ip:$port, and still nothing else on your network."
                 echo "Make it the agent's first choice with: $(basename "$0") compute use $name" ;;
@@ -138,7 +187,7 @@ case "$cmd" in
                 name="${3:-}"
                 [[ "$name" =~ $name_re ]] || { echo "usage: $(basename "$0") compute remove <name>" >&2; exit 2; }
                 sudo rm -f "$dir/$name"
-                sudo systemctl restart nanoaurora-firewall.service
+                sudo systemctl restart nanoborealis-firewall.service
                 in_agent remove "$name" ;;
             use)
                 [ -n "${3:-}" ] || { echo "usage: $(basename "$0") compute use <name>|cloud" >&2; exit 2; }
@@ -157,11 +206,11 @@ case "$cmd" in
         agentctl restart nanobot.service
         echo "key replaced; agent restarted" ;;
     rebuild)
-        build="$AGENT_HOME/nanobot-os"
-        if [ -d /usr/share/nanobot-os/image ]; then
-            # On a nanobot OS image, pick up the container definition shipped with the latest OS update.
+        build="$AGENT_HOME/nanoborealis"
+        if [ -d /usr/share/nanoborealis/image ]; then
+            # On a NanoBorealis image, pick up the container definition shipped with the latest OS update.
             sudo rm -rf "$build/image"
-            sudo cp -R /usr/share/nanobot-os/image "$build/image"
+            sudo cp -R /usr/share/nanoborealis/image "$build/image"
             sudo chown -R "$AGENT_USER:$AGENT_USER" "$build/image"
         fi
         version="${2:-$(sudo cat "$build/VERSION")}"
@@ -176,7 +225,7 @@ case "$cmd" in
         agentctl start nanobot.service
         echo "reset; config and skills re-seeded from the image" ;;
     uninstall)
-        confirm "This removes the agent, its data, its image, its secrets, and the $AGENT_USER account. /srv/nanoaurora/projects is kept." || exit 1
+        confirm "This removes the agent, its data, its image, its secrets, and the $AGENT_USER account. /srv/nanoborealis/projects is kept." || exit 1
         agentctl stop nanobot.service 2>/dev/null || true
         sudo rm -f "$AGENT_HOME/.config/containers/systemd/nanobot.container"
         agentctl daemon-reload 2>/dev/null || true
@@ -189,9 +238,9 @@ case "$cmd" in
             sleep 1
         done
         [ "$removed" -eq 1 ] || { echo "could not remove $AGENT_USER; run: sudo userdel --remove $AGENT_USER" >&2; exit 1; }
-        rm -f "$HOME/.local/share/applications/nanobot-os.desktop"
-        sudo rm -f /usr/local/bin/nanobot-os
-        echo "NanoAurora agent removed" ;;
+        rm -f "$HOME/.local/share/applications/nanoborealis.desktop"
+        sudo rm -f /usr/local/bin/nanoborealis
+        echo "NanoBorealis agent removed" ;;
     *)
         echo "unknown command: $cmd" >&2
         usage >&2

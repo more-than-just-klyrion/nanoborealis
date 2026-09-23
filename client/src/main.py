@@ -1,4 +1,4 @@
-"""NanoAurora: chat with your NanoAurora agent from any device.
+"""NanoBorealis: chat with your NanoBorealis agent from any device.
 
     python src/main.py                    # desktop window
     FLET_FORCE_WEB_SERVER=true FLET_SERVER_PORT=8550 python src/main.py   # serve to a browser
@@ -27,10 +27,10 @@ NARROW = 760  # below this width the chat list moves into a drawer
 READABLE = 860  # widest the conversation column gets
 SEED = ft.Colors.TEAL
 MONO = "monospace"
-PREF_ADDRESS = "nanoaurora.address"
-PREF_PASSWORD = "nanoaurora.password"
-PREF_CLIENT_ID = "nanoaurora.client_id"
-PREF_COMPUTE = "nanoaurora.compute"  # JSON: consent, token, served model, speeds
+PREF_ADDRESS = "nanoborealis.address"
+PREF_PASSWORD = "nanoborealis.password"
+PREF_CLIENT_ID = "nanoborealis.client_id"
+PREF_COMPUTE = "nanoborealis.compute"  # JSON: consent, token, served model, speeds
 SUGGESTIONS = [
     ("Plan a project", "Help me plan a small Python project. Ask me what it should do first."),
     ("Look at my projects", "Look through ~/projects and tell me what is there."),
@@ -126,7 +126,7 @@ class ToolRow:
         self.result_box.visible = True
 
 
-class NanoAuroraApp:
+class NanoBorealisApp:
     def __init__(self, page: ft.Page):
         self.page = page
         self.prefs = ft.SharedPreferences()
@@ -158,7 +158,7 @@ class NanoAuroraApp:
 
     async def start(self) -> None:
         p = self.page
-        p.title = "NanoAurora"
+        p.title = "NanoBorealis"
         p.theme_mode = ft.ThemeMode.SYSTEM
         p.theme = ft.Theme(color_scheme_seed=SEED)
         p.dark_theme = ft.Theme(color_scheme_seed=SEED)
@@ -172,7 +172,7 @@ class NanoAuroraApp:
         password = await self.pref_get(PREF_PASSWORD)
         self.client_id = await self.pref_get(PREF_CLIENT_ID)
         if not self.client_id:
-            self.client_id = f"nanoaurora-client-{uuid.uuid4().hex[:12]}"
+            self.client_id = f"nanoborealis-client-{uuid.uuid4().hex[:12]}"
             await self.pref_set(PREF_CLIENT_ID, self.client_id)
         if self.address or password:
             self.address_field.value = self.address
@@ -183,9 +183,13 @@ class NanoAuroraApp:
 
     async def pref_get(self, key: str) -> str:
         try:
-            return str(await self.prefs.get(key) or "")
+            value = str(await self.prefs.get(key) or "")
+            if not value and key.startswith("nanoborealis."):
+                # Saved before the rename to NanoBorealis.
+                value = str(await self.prefs.get("nanoaurora." + key.split(".", 1)[1]) or "")
+            return value
         except Exception as e:  # storage is a convenience; never let it stop the app
-            print(f"nanoaurora-client: could not read {key}: {e}")
+            print(f"nanoborealis-client: could not read {key}: {e}")
             return ""
 
     async def pref_set(self, key: str, value: str | None) -> None:
@@ -195,7 +199,7 @@ class NanoAuroraApp:
             else:
                 await self.prefs.set(key, value)
         except Exception as e:
-            print(f"nanoaurora-client: could not save {key}: {e}")
+            print(f"nanoborealis-client: could not save {key}: {e}")
 
     def show_connect(self, address: str = "", password: str = "", error: str = "") -> None:
         self.in_chat_view = False
@@ -217,10 +221,10 @@ class NanoAuroraApp:
         help_text = ft.Text(
             size=12, color=ft.Colors.ON_SURFACE_VARIANT,
             spans=[
-                ft.TextSpan("On the NanoAurora machine, "),
-                ft.TextSpan("nanoaurora password", style=mono),
+                ft.TextSpan("On the NanoBorealis machine, "),
+                ft.TextSpan("nanoborealis password", style=mono),
                 ft.TextSpan(" shows the password and "),
-                ft.TextSpan("nanoaurora remote on", style=mono),
+                ft.TextSpan("nanoborealis remote on", style=mono),
                 ft.TextSpan(" lets other devices connect."),
             ],
         )
@@ -233,7 +237,7 @@ class NanoAuroraApp:
                 tight=True, spacing=16,
                 controls=[
                     ft.Row([logo(44), ft.Column([
-                        ft.Text("NanoAurora", size=24, weight=ft.FontWeight.W_600),
+                        ft.Text("NanoBorealis", size=24, weight=ft.FontWeight.W_600),
                         ft.Text("Connect to your agent", color=ft.Colors.ON_SURFACE_VARIANT),
                     ], spacing=0, tight=True)], spacing=14),
                     self.address_field,
@@ -337,7 +341,7 @@ class NanoAuroraApp:
         self.messages = ft.ListView(expand=True, spacing=12)
         self.welcome = self.welcome_view()
         self.composer = ft.TextField(
-            hint_text="Message NanoAurora", multiline=True, min_lines=1, max_lines=8, shift_enter=True,
+            hint_text="Message NanoBorealis", multiline=True, min_lines=1, max_lines=8, shift_enter=True,
             border=ft.NoInputBorder(), expand=True, autofocus=True, text_size=15,
             content_padding=ft.Padding.symmetric(vertical=10), on_submit=self.on_send,
         )
@@ -375,7 +379,7 @@ class NanoAuroraApp:
     def sidebar_column(self, chat_list: ft.Control | None) -> ft.Column:
         top = [
             ft.Container(padding=ft.Padding.only(left=16, right=12, top=16, bottom=6),
-                         content=ft.Row([logo(28), ft.Text("NanoAurora", size=17, weight=ft.FontWeight.W_600)],
+                         content=ft.Row([logo(28), ft.Text("NanoBorealis", size=17, weight=ft.FontWeight.W_600)],
                                         spacing=10)),
             ft.Container(padding=ft.Padding.symmetric(horizontal=12),
                          content=ft.FilledTonalButton("New chat", icon=ft.Icons.ADD_ROUNDED,
@@ -426,7 +430,7 @@ class NanoAuroraApp:
             content=ft.Column(tight=True, spacing=16, horizontal_alignment=ft.CrossAxisAlignment.CENTER, controls=[
                 logo(56),
                 ft.Text("What should we work on?", size=24, weight=ft.FontWeight.W_500, text_align=ft.TextAlign.CENTER),
-                ft.Text("Your agent runs on your NanoAurora machine. It can write, run, and fix code there.",
+                ft.Text("Your agent runs on your NanoBorealis machine. It can write, run, and fix code there.",
                         size=14, color=ft.Colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER),
                 ft.Row(chips, wrap=True, spacing=8, run_spacing=8, alignment=ft.MainAxisAlignment.CENTER),
             ]),
@@ -906,7 +910,7 @@ class NanoAuroraApp:
         self.set_share_body([
             ft.Text(hw.describe(), size=12, color=ft.Colors.ON_SURFACE_VARIANT),
             ft.Text("Your agent can run on a model hosted on this device instead of free cloud models.", size=14),
-            self.bullet("NanoAurora picks the most capable model that fits, downloads it with Ollama, and tests "
+            self.bullet("NanoBorealis picks the most capable model that fits, downloads it with Ollama, and tests "
                         "its speed. Any model it downloads and then rejects is deleted again."),
             self.bullet(first),
             self.bullet(f"While this app is open, it answers the agent on port {compute.RELAY_PORT}: only with "
@@ -991,10 +995,10 @@ class NanoAuroraApp:
                     ft.Text(f"Serving {self.share.get('tag')}: reads {self.share.get('prompt_tps', 0):.0f} and "
                             f"writes {self.share.get('gen_tps', 0):.0f} tokens/s.", size=14, expand=True)],
                    spacing=10),
-            ft.Text("To let the agent use it, run this once on your NanoAurora machine:", size=13),
+            ft.Text("To let the agent use it, run this once on your NanoBorealis machine:", size=13),
             ft.Container(ft.Text(command, font_family=MONO, size=12, selectable=True),
                          bgcolor=ft.Colors.SURFACE_CONTAINER, border_radius=8, padding=10),
-            ft.Text(f"Then nanoaurora compute use {name} makes it the agent's first choice. The agent falls "
+            ft.Text(f"Then nanoborealis compute use {name} makes it the agent's first choice. The agent falls "
                     "back to its cloud models whenever this device is off.", size=12,
                     color=ft.Colors.ON_SURFACE_VARIANT),
         ], [
@@ -1011,8 +1015,8 @@ class NanoAuroraApp:
         await self.save_share()
         self.set_share_body([
             ft.Text("This device has stopped sharing. The agent is back on its cloud models.", size=14),
-            ft.Text(f"To take it off the agent's list too, run nanoaurora compute remove {compute.device_name()} "
-                    "on your NanoAurora machine.", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text(f"To take it off the agent's list too, run nanoborealis compute remove {compute.device_name()} "
+                    "on your NanoBorealis machine.", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
         ], [ft.FilledButton("Done", on_click=on(self.close_share_dialog))])
         self.refresh_sidebar()
 
@@ -1072,7 +1076,7 @@ class NanoAuroraApp:
 
 
 async def main(page: ft.Page) -> None:
-    await NanoAuroraApp(page).start()
+    await NanoBorealisApp(page).start()
 
 
 if __name__ == "__main__":

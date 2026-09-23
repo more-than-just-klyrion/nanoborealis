@@ -1,7 +1,7 @@
 [project]
-name = "nanoaurora-client"
+name = "nanoborealis-client"
 version = "0.1.0"
-description = "Chat with your NanoAurora agent from any device"
+description = "Chat with your NanoBorealis agent from any device"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -15,9 +15,9 @@ desktop = ["flet-desktop==1.0.1"]
 
 [tool.flet]
 org = "io.github.more-than-just-klyrion"
-product = "NanoAurora"
-company = "NanoAurora"
-copyright = "NanoAurora contributors"
+product = "NanoBorealis"
+company = "NanoBorealis"
+copyright = "NanoBorealis contributors"
 
 [tool.flet.app]
 path = "src"

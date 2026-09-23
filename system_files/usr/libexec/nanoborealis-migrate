@@ -1,0 +1,70 @@
+#!/usr/bin/bash
+# Moves a system set up under an earlier name (nanobot OS, NanoAurora) onto NanoBorealis's
+# names, so an update never strands a working agent. Runs at every boot; each step only acts
+# when it finds the old layout, so it's a no-op on fresh installs and after the first run.
+set -uo pipefail
+
+AGENT_USER=nanobot-agent
+did=0
+log() { echo "nanoborealis-migrate: $*"; did=1; }
+
+# The shared projects folder. mv keeps its ACLs and SELinux labels.
+if [ -d /srv/nanoaurora ] && [ ! -e /srv/nanoborealis ]; then
+    mv /srv/nanoaurora /srv/nanoborealis && log "moved /srv/nanoaurora to /srv/nanoborealis"
+fi
+
+# Each user's shortcut to it, and the desktop update icon.
+for home in /var/home/*; do
+    [ -d "$home" ] || continue
+    owner="$(stat -c %U "$home")"
+    if [ -L "$home/nanoaurora-projects" ]; then
+        rm -f "$home/nanoaurora-projects"
+        ln -sfn /srv/nanoborealis/projects "$home/nanoborealis-projects"
+        chown -h "$owner:" "$home/nanoborealis-projects"
+        log "relinked projects for $owner"
+    fi
+    for desktop in "$home/Desktop" "$home/Schreibtisch" "$home/Bureau"; do
+        if [ -f "$desktop/nanoaurora-update.desktop" ]; then
+            install -o "$owner" -g "$(stat -c %G "$home")" -m 0755 \
+                /usr/share/applications/nanoborealis-update.desktop "$desktop/nanoborealis-update.desktop"
+            rm -f "$desktop/nanoaurora-update.desktop"
+            log "replaced the update icon on $owner's desktop"
+        fi
+    done
+done
+
+# Devices approved for compute sharing.
+if [ -d /etc/nanoaurora ] && [ ! -e /etc/nanoborealis ]; then
+    mv /etc/nanoaurora /etc/nanoborealis && log "moved /etc/nanoaurora to /etc/nanoborealis"
+fi
+
+# The agent: its build context, its Quadlet unit, and its local image name.
+if agent_home="$(getent passwd "$AGENT_USER" | cut -d: -f6)" && [ -n "$agent_home" ]; then
+    if [ -d "$agent_home/nanobot-os" ] && [ ! -e "$agent_home/nanoborealis" ]; then
+        mv "$agent_home/nanobot-os" "$agent_home/nanoborealis" && log "moved the agent's build folder"
+    fi
+    quadlet="$agent_home/.config/containers/systemd/nanobot.container"
+    if [ -f "$quadlet" ] && grep -q -e '/srv/nanoaurora/' -e 'localhost/nanobot-os:' "$quadlet"; then
+        uid="$(id -u "$AGENT_USER")"
+        # Rootless Podman needs the agent's runtime directory; logind makes it for lingering users.
+        for _ in $(seq 1 60); do [ -S "/run/user/$uid/bus" ] && break; sleep 1; done
+        as_agent() {
+            runuser -u "$AGENT_USER" -- env HOME="$agent_home" XDG_RUNTIME_DIR="/run/user/$uid" \
+                DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" "$@"
+        }
+        if as_agent podman image exists localhost/nanobot-os:latest; then
+            as_agent podman tag localhost/nanobot-os:latest localhost/nanoborealis-agent:latest
+        fi
+        sed -i -e 's|/srv/nanoaurora/|/srv/nanoborealis/|g' \
+               -e 's|localhost/nanobot-os:latest|localhost/nanoborealis-agent:latest|' \
+               -e 's|^Description=.*|Description=NanoBorealis agent (nanobot gateway + WebUI)|' "$quadlet"
+        log "updated the agent's Quadlet unit"
+        if [ -S "/run/user/$uid/bus" ]; then
+            as_agent systemctl --user daemon-reload
+            as_agent systemctl --user restart nanobot.service || true
+        fi
+    fi
+fi
+
+[ "$did" -eq 1 ] || echo "nanoborealis-migrate: nothing to migrate"
+exit 0

@@ -1,7 +1,7 @@
 #!/usr/bin/bash
-# Keeps the NanoAurora agent account off the local network. It can still reach DNS and
+# Keeps the NanoBorealis agent account off the local network. It can still reach DNS and
 # the internet (OpenRouter, package mirrors), but no private, link-local, or CGNAT address.
-# It may answer connections that LAN devices open to it (`nanoaurora remote on`), since
+# It may answer connections that LAN devices open to it (`nanoborealis remote on`), since
 # those packets travel in conntrack's reply direction; it can never start one itself.
 # Root loads this at boot, so the agent, which has no root on the host, can't undo it.
 set -euo pipefail
@@ -11,9 +11,9 @@ if ! uid="$(id -u nanobot-agent 2>/dev/null)"; then
     exit 0
 fi
 
-# Devices the owner approved with `nanoaurora compute add`: one address and port each.
+# Devices the owner approved with `nanoborealis compute add`: one address and port each.
 compute_rules=""
-for f in /etc/nanoaurora/compute.d/*; do
+for f in /etc/nanoborealis/compute.d/*; do
     [ -f "$f" ] || continue
     ip="$(sed -n 's/^ip=//p' "$f")"
     port="$(sed -n 's/^port=//p' "$f")"
@@ -28,7 +28,9 @@ done
 nft -f - <<EOF
 add table inet nanoaurora
 delete table inet nanoaurora
-table inet nanoaurora {
+add table inet nanoborealis
+delete table inet nanoborealis
+table inet nanoborealis {
     set lan4 {
         type ipv4_addr
         flags interval
