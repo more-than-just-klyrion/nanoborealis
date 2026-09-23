@@ -121,3 +121,15 @@ jobs:
           fi
           echo "ok: the agent is blocked from $lan_ip"
           sudo -u nanobot-agent curl -s -o /dev/null --max-time 20 -w 'ok: the agent reaches the internet (HTTP %{http_code})\n' https://openrouter.ai/api/v1/models
+
+      - name: LAN devices can still reach a port the agent serves (nanoaurora remote on)
+        run: |
+          lan_ip="$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1)}')"
+          sudo -u nanobot-agent sh -c 'cd /tmp && exec python3 -m http.server 8081 --bind 0.0.0.0' >/dev/null 2>&1 &
+          sleep 1
+          if ! curl -s -o /dev/null --max-time 5 "http://$lan_ip:8081/"; then
+            echo "FAIL: the guard dropped the agent's replies to a LAN client"
+            sudo nft list table inet nanoaurora
+            exit 1
+          fi
+          echo "ok: a LAN client reaches the agent's port on $lan_ip:8081"

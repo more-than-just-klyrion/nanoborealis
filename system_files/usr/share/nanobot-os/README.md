@@ -33,7 +33,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 | One shared folder | The only host path the agent sees is the projects folder |
 | Network guard | `nanoaurora-firewall.service` loads at boot, before any user services start, and drops the agent's traffic to private, link-local, and CGNAT addresses |
 | SELinux | Enforcing, and the projects folder is labeled for container use |
-| Loopback-only WebUI | Reachable only from this machine, and only with the password |
+| Loopback-only WebUI | Reachable only from this machine, and only with the password, until you run `nanoaurora remote on` |
 | Read-only OS | Aurora's system image can't be modified by anything the agent can reach |
 
 ## What it doesn't protect against
@@ -42,6 +42,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 - **Internet access is unrestricted.** The firewall stops the local network, not the internet.
 - **Free providers may log prompts.** Keep personal files and logged-in accounts off this machine.
 - **Secrets aren't encrypted at rest.** Podman keeps them in a file only `nanobot-agent` and root can read.
+- **Remote access is plain HTTP.** With `nanoaurora remote on`, the WebUI password crosses your network unencrypted. Only turn it on for networks you trust.
 
 ## Day to day
 
@@ -53,6 +54,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 | `nanoaurora restart` | Restart the agent in a fresh container |
 | `nanoaurora shell` | Open a shell inside the agent's container |
 | `nanoaurora password` | Show the WebUI password |
+| `nanoaurora remote on` / `off` / `status` | Let other devices on your network use the agent through the NanoAurora client or a browser, or go back to this machine only |
 | `nanoaurora set-key` | Swap the OpenRouter key |
 | `nanoaurora rebuild [X.Y.Z]` | Rebuild the agent's container, optionally at a new nanobot version |
 | `nanoaurora reset` | **Delete** the agent's home (memory, sessions, settings, tools) and start fresh. Projects are kept |
@@ -66,4 +68,4 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 
 - **Models:** **Settings → Models** in the WebUI. Changes are saved in the agent's home.
 - **nanobot version:** `nanoaurora rebuild 0.3.6`
-- **WebUI from another machine:** in `~nanobot-agent/.config/containers/systemd/nanobot.container`, change `127.0.0.1` in `PublishPort` to this machine's LAN address, run `sudo systemctl --user -M nanobot-agent@ daemon-reload`, then `nanoaurora restart`. The password still applies.
+- **Use the agent from another device:** run `nanoaurora remote on`, then connect with the [NanoAurora client](https://github.com/more-than-just-klyrion/nanobot-os/tree/main/client) or a browser at the address it prints. The password still applies. Reinstalling the agent turns remote access back off.

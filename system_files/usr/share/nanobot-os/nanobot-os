@@ -18,6 +18,7 @@ Usage: $(basename "$0") <command>
   restart           restart the agent (fresh container, same memory and settings)
   shell             open a shell inside the agent's container
   password          show the WebUI password
+  remote on|off     let other devices on your network use the agent (NanoAurora client, browser)
   set-key           replace the OpenRouter API key
   rebuild [X.Y.Z]   rebuild the image (optionally at a new nanobot version) and restart
   reset             DELETE the agent's home: memory, sessions, skills, settings, its tools
@@ -72,6 +73,43 @@ case "$cmd" in
     password)
         as_agent podman secret inspect --showsecret --format '{{.SecretData}}' nanobot_webui_secret
         echo ;;
+    remote)
+        quadlet="$AGENT_HOME/.config/containers/systemd/nanobot.container"
+        sudo test -f "$quadlet" || { echo "the agent's service file is missing; reinstall with: bash /usr/share/nanobot-os/install.sh" >&2; exit 1; }
+        firewalld_port() {  # add|remove; no-op when firewalld isn't running
+            if sudo firewall-cmd --state >/dev/null 2>&1; then
+                sudo firewall-cmd --quiet --permanent "--$1-port=8765/tcp" || true
+                sudo firewall-cmd --quiet --reload
+            fi
+        }
+        case "${2:-status}" in
+            on)
+                sudo sed -i 's|^PublishPort=.*|PublishPort=8765:8765|' "$quadlet"
+                firewalld_port add
+                agentctl daemon-reload
+                agentctl restart nanobot.service
+                echo "Other devices on your network can now reach the agent at:"
+                ip -4 -o addr show scope global | awk '{ split($4, a, "/"); print "  http://" a[1] ":8765" }'
+                echo "Sign in with the password from '$(basename "$0") password'."
+                echo "The connection is plain HTTP, so anyone watching this network could read that"
+                echo "password. Only turn this on for networks you trust."
+                ;;
+            off)
+                sudo sed -i 's|^PublishPort=.*|PublishPort=127.0.0.1:8765:8765|' "$quadlet"
+                firewalld_port remove
+                agentctl daemon-reload
+                agentctl restart nanobot.service
+                echo "The agent is reachable from this computer only." ;;
+            status)
+                if sudo grep -q '^PublishPort=127\.0\.0\.1:' "$quadlet"; then
+                    echo "remote access is off: only this computer can reach the agent"
+                else
+                    echo "remote access is on: devices on your network can reach the agent on port 8765"
+                fi ;;
+            *)
+                echo "usage: $(basename "$0") remote on|off|status" >&2
+                exit 2 ;;
+        esac ;;
     set-key)
         read -r -s -p "New OpenRouter API key: " key; echo
         [ -n "$key" ] || { echo "no key entered" >&2; exit 1; }

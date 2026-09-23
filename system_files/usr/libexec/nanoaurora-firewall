@@ -1,6 +1,8 @@
 #!/usr/bin/bash
 # Keeps the NanoAurora agent account off the local network. It can still reach DNS and
 # the internet (OpenRouter, package mirrors), but no private, link-local, or CGNAT address.
+# It may answer connections that LAN devices open to it (`nanoaurora remote on`), since
+# those packets travel in conntrack's reply direction; it can never start one itself.
 # Root loads this at boot, so the agent, which has no root on the host, can't undo it.
 set -euo pipefail
 
@@ -25,6 +27,7 @@ table inet nanoaurora {
     }
     chain output {
         type filter hook output priority filter; policy accept;
+        meta skuid $uid ct direction reply accept
         meta skuid $uid ip daddr @lan4 meta l4proto { tcp, udp } th dport 53 accept
         meta skuid $uid ip6 daddr @lan6 meta l4proto { tcp, udp } th dport 53 accept
         meta skuid $uid ip daddr @lan4 counter drop

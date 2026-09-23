@@ -31,7 +31,11 @@ GitHub builds a fresh image every day on top of the latest Aurora, but nothing u
 
 ## Managing the agent
 
-`nanoaurora help` lists everything: update, open, status, logs, restart, shell, password, set-key, rebuild, reset, uninstall.
+`nanoaurora help` lists everything: update, open, status, logs, restart, shell, password, remote, set-key, rebuild, reset, uninstall.
+
+## Using it from other devices
+
+The [NanoAurora client](client/) is a desktop and mobile app for chatting with the agent from another computer or phone. On the NanoAurora machine, run `nanoaurora remote on` once, then connect the client to the address it prints, using the password from `nanoaurora password`.
 
 ## Building
 
