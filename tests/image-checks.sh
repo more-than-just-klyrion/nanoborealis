@@ -54,7 +54,9 @@ done
 expect "Avahi can announce this machine to clients (nanoborealis remote on)" test -d /etc/avahi/services
 
 # The migration from earlier names, run against a simulated NanoAurora-era layout. This runs in
-# a throwaway container, so it may change things.
+# a throwaway container, so it may change things. On bootc /srv links to /var/srv, which a booted
+# system creates but a bare container doesn't.
+[ -L /srv ] && mkdir -p "$(readlink -f /srv)"
 mkdir -p /srv/nanoaurora/projects /var/home/olduser/Desktop /etc/nanoaurora/compute.d
 echo marker > /srv/nanoaurora/projects/kept.txt
 ln -s /srv/nanoaurora/projects /var/home/olduser/nanoaurora-projects
