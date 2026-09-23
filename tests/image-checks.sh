@@ -53,6 +53,29 @@ for tool in nft konsole podman python3 bootc flatpak; do
 done
 expect "Avahi can announce this machine to clients (nanoborealis remote on)" test -d /etc/avahi/services
 
+# The NanoBorealis look. Each line is an override an upstream update could quietly undo.
+expect "distributor logo is the NanoBorealis star" grep -q NanoBorealis /usr/share/icons/hicolor/scalable/places/distributor-logo.svg
+expect "app icon installed" test -f /usr/share/icons/hicolor/scalable/apps/nanoborealis.svg
+expect "os-release logo is the star" grep -q '^LOGO=distributor-logo$' /usr/lib/os-release
+expect "Aurora's look-and-feel is still there to build on" test -d /usr/share/plasma/look-and-feel/dev.getaurora.aurora.desktop
+expect "NanoBorealis look-and-feel installed" grep -q '"Id": "org.nanoborealis.desktop"' \
+    /usr/share/plasma/look-and-feel/org.nanoborealis.desktop/metadata.json
+expect "it is the default look-and-feel" grep -q '^LookAndFeelPackage=org.nanoborealis.desktop$' /etc/xdg/kdeglobals
+expect "its default wallpaper is the aurora" grep -q '^Image=NanoBorealis$' \
+    /usr/share/plasma/look-and-feel/org.nanoborealis.desktop/contents/defaults
+expect "its splash screen is ours" grep -q 'Theme=org.nanoborealis.desktop' \
+    /usr/share/plasma/look-and-feel/org.nanoborealis.desktop/contents/defaults
+expect "wallpaper package installed" test -f /usr/share/wallpapers/NanoBorealis/contents/images/3840x2160.jpg
+expect "lock screen shows the aurora" grep -q NanoBorealis /etc/xdg/kscreenlockerrc
+expect "fastfetch shows the star" grep -q /usr/share/nanoborealis/fastfetch-logo.txt /usr/share/ublue-os/fastfetch.jsonc
+theme="$(plymouth-set-default-theme 2>/dev/null || true)"
+[ "$theme" = nanoborealis ] && pass "boot splash is NanoBorealis" || flunk "boot splash is '$theme'"
+if lsinitrd /usr/lib/modules/*/initramfs.img 2>/dev/null | grep -q 'plymouth/themes/nanoborealis/watermark.png'; then
+    pass "the initramfs carries the boot splash"
+else
+    flunk "the initramfs doesn't carry the boot splash"
+fi
+
 # The migration from earlier names, run against a simulated NanoAurora-era layout. This runs in
 # a throwaway container, so it may change things. On bootc /srv links to /var/srv, which a booted
 # system creates but a bare container doesn't.

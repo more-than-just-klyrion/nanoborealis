@@ -19,6 +19,9 @@ on:
       - '.github/workflows/branding-inventory.yml'
       - '.github/workflows/build-disk.yml'
       - 'tests/branding-inventory.sh'
+      - 'pool/**'
+      - '.github/workflows/pool.yml'
+      - '.gitignore'
   workflow_dispatch:
 
 env:
