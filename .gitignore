@@ -4,3 +4,6 @@ output
 _build-*/**
 *_chunkah_*
 *_rpm-ostree_*
+
+# Fonts the branding scripts download
+branding/.cache/
