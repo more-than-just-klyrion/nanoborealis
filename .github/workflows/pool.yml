@@ -1,0 +1,126 @@
+---
+name: Pool node image
+
+# Builds the NanoBorealis pool node (a pinned exo), proves it on a runner (serves a model, answers,
+# makes tool calls, and drives a real nanobot agent turn), and only then publishes it.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'pool/**'
+      - '.github/workflows/pool.yml'
+  workflow_dispatch:
+    inputs:
+      exo_repo:
+        description: "Engine source (exo, or a fork such as https://github.com/ArgentAIOS/nxo)"
+        required: false
+        default: "https://github.com/exo-explore/exo"
+      exo_ref:
+        description: "Engine commit or tag"
+        required: false
+        default: "21a54c5"
+
+jobs:
+  cpu:
+    name: Build, prove and publish (CPU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: write
+    env:
+      EXO: http://127.0.0.1:52415
+      MODEL: mlx-community/Qwen3-0.6B-8bit
+      EXO_REPO: ${{ inputs.exo_repo || 'https://github.com/exo-explore/exo' }}
+      EXO_REF: ${{ inputs.exo_ref || '21a54c5' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Make room
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Build the node image
+        run: |
+          podman build --build-arg VARIANT=cpu --build-arg "EXO_REPO=$EXO_REPO" --build-arg "EXO_REF=$EXO_REF" \
+            -t nanoborealis-pool:cpu pool/
+          podman run --rm --entrypoint cat nanoborealis-pool:cpu /opt/exo/ENGINE_REPO /opt/exo/ENGINE_COMMIT
+
+      - name: Start a node
+        run: |
+          podman run -d --name node -p 127.0.0.1:52415:52415 nanoborealis-pool:cpu
+          for i in $(seq 1 120); do curl -sf "$EXO/v1/models" -o /dev/null && break; sleep 2; done
+          curl -sf "$EXO/v1/models" -o /dev/null
+
+      - name: Serve a small model
+        run: |
+          curl -s -X POST "$EXO/place_instance" -H 'Content-Type: application/json' \
+            -d "{\"model_id\": \"$MODEL\"}" -w '\nHTTP %{http_code}\n'
+          for i in $(seq 1 90); do
+            curl -sf "$EXO/v1/models?status=downloaded" \
+              | python3 -c 'import json, os, sys; sys.exit(0 if os.environ["MODEL"] in [m["id"] for m in json.load(sys.stdin)["data"]] else 1)' \
+              && break
+            sleep 10
+          done
+          for i in $(seq 1 40); do
+            curl -s -X POST "$EXO/v1/chat/completions" -H 'Content-Type: application/json' -o chat.json \
+              -d "{\"model\": \"$MODEL\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello.\"}], \"max_tokens\": 48}" || true
+            python3 -c 'import json; assert json.load(open("chat.json"))["choices"]' 2>/dev/null && break
+            sleep 15
+          done
+          python3 -c 'import json; r = json.load(open("chat.json")); print("reply:", r["choices"][0]["message"].get("content"))'
+
+      - name: Tool calls work
+        run: |
+          curl -s -X POST "$EXO/v1/chat/completions" -H 'Content-Type: application/json' -o tool.json -d "{
+            \"model\": \"$MODEL\", \"max_tokens\": 512,
+            \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Paris? Use the tool.\"}],
+            \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_weather\",
+              \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}]}"
+          python3 - <<'EOF'
+          import json
+          message = json.load(open("tool.json"))["choices"][0]["message"]
+          calls = message.get("tool_calls") or []
+          print("tool calls:", json.dumps(calls))
+          assert calls and calls[0]["function"]["name"] == "get_weather", "no tool call came back"
+          EOF
+
+      - name: A real agent turn through the pool
+        run: |
+          version="$(sed -n 's/^ARG NANOBOT_VERSION=//p' system_files/usr/share/nanoborealis/image/Containerfile)"
+          python3 -m venv "$RUNNER_TEMP/nb"
+          "$RUNNER_TEMP/nb/bin/pip" install --quiet "nanobot-ai==$version" "websockets>=13"
+          mkdir -p "$RUNNER_TEMP/gw"
+          python3 - "$RUNNER_TEMP/gw/config.json" <<'EOF'
+          import json, os, sys
+          json.dump({
+              "providers": {"device-pool": {"apiBase": "http://127.0.0.1:52415/v1", "apiKey": "none"}},
+              "modelPresets": {"device-pool": {"provider": "device-pool", "model": os.environ["MODEL"], "maxTokens": 1024,
+                                               "contextWindowTokens": 32768, "temperature": 0.2}},
+              "agents": {"defaults": {"modelPreset": "device-pool"}},
+              "gateway": {"port": 18791},
+              "channels": {"websocket": {"enabled": True, "host": "127.0.0.1", "port": 18765,
+                                         "tokenIssueSecret": "test-password", "websocketRequiresToken": True}},
+          }, open(sys.argv[1], "w"), indent=2)
+          EOF
+          # A CPU runner reads the agent's long prompt slower than nanobot's default 90 s patience.
+          NANOBOT_STREAM_IDLE_TIMEOUT_S=1800 nohup "$RUNNER_TEMP/nb/bin/nanobot" gateway --foreground \
+            --config "$RUNNER_TEMP/gw/config.json" > "$RUNNER_TEMP/gateway.log" 2>&1 &
+          for i in $(seq 1 90); do curl -sf http://127.0.0.1:18791/health >/dev/null && break; sleep 1; done
+          "$RUNNER_TEMP/nb/bin/python" client/dev/agent_check.py http://127.0.0.1:18765 test-password 3600
+
+      - name: Publish
+        if: github.ref == 'refs/heads/main'
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for tag in cpu "cpu-$(date -u +%Y%m%d)" "cpu-${EXO_REF}"; do
+            podman push nanoborealis-pool:cpu "ghcr.io/$owner/nanoborealis-pool:$tag"
+          done
+
+      - name: Logs
+        if: always()
+        run: |
+          echo "--- node"; podman logs node 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^[[:space:]│└]' | tail -n 60 || true
+          echo "--- gateway"; tail -n 40 "$RUNNER_TEMP/gateway.log" 2>/dev/null || true
