@@ -18,13 +18,30 @@ on:
 
 jobs:
   exo:
-    name: exo on CPU, driving the agent
+    name: exo ${{ matrix.variant }} on CPU, driving the agent
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The last release, as shipped: PyPI mlx and mlx-cpu 0.31.1.
+          - variant: release
+            ref: v1.0.71
+            extra: cpu
+            mlx_override: ""
+          # The latest source ships a custom mlx build with no CPU library; swap in a matching PyPI pair.
+          - variant: main
+            ref: main
+            extra: mlx-cpu
+            mlx_override: "mlx==0.32.2 mlx-cpu==0.32.2"
     env:
       EXO: http://127.0.0.1:52415
+      EXO_REF: ${{ matrix.ref }}
+      EXO_EXTRA: ${{ matrix.extra }}
+      MLX_OVERRIDE: ${{ matrix.mlx_override }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -43,14 +60,14 @@ jobs:
 
       - name: Build exo
         run: |
-          git clone --depth 1 https://github.com/exo-explore/exo "$RUNNER_TEMP/exo"
+          git clone --depth 1 --branch "$EXO_REF" https://github.com/exo-explore/exo "$RUNNER_TEMP/exo"
           git -C "$RUNNER_TEMP/exo" log -1 --format='exo %h (%cd)'
           cd "$RUNNER_TEMP/exo/dashboard" && npm install --no-audit --no-fund --loglevel=error && npm run build
-          cd "$RUNNER_TEMP/exo" && uv sync --extra mlx-cpu
-          # exo pins mlx 0.32.0 but mlx-cpu 0.31.2, whose native library lacks symbols the 0.32 bindings
-          # import (the runner dies with "undefined symbol"). Match them; `uv run --no-sync` keeps it.
-          mlx="$(.venv/bin/python -c 'import importlib.metadata as m; print(m.version("mlx"))')"
-          uv pip install --python .venv/bin/python "mlx-cpu==$mlx"
+          cd "$RUNNER_TEMP/exo" && uv sync --extra "$EXO_EXTRA"
+          if [ -n "$MLX_OVERRIDE" ]; then
+            # `uv run --no-sync` below keeps this override in place.
+            uv pip install --python .venv/bin/python $MLX_OVERRIDE
+          fi
           .venv/bin/python -c 'import mlx.core as mx; print("mlx works:", mx.__version__, mx.array([1, 2]).sum().item())'
           df -h / | tail -1
 
