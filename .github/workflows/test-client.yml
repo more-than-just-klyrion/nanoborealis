@@ -33,7 +33,7 @@ jobs:
           version="$(sed -n 's/^ARG NANOBOT_VERSION=//p' system_files/usr/share/nanoborealis/image/Containerfile)"
           echo "nanobot $version"
           python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install --quiet "nanobot-ai==$version" "websockets>=13" "flet==1.0.1"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "nanobot-ai==$version" "websockets>=13" "flet==1.0.1" "zeroconf>=0.130"
 
       - name: Start the stand-in model and a gateway
         working-directory: client

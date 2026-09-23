@@ -12,6 +12,7 @@ import json
 import os
 import secrets
 import sys
+import tempfile
 import time
 import urllib.parse
 import uuid
@@ -21,6 +22,8 @@ from typing import Any
 import flet as ft
 
 import compute
+import discovery
+import stickmaker
 from agent_link import AgentLink, AuthError, LinkError
 
 NARROW = 760  # below this width the chat list moves into a drawer
@@ -153,6 +156,10 @@ class NanoBorealisApp:
         self.relay: compute.Relay | None = None
         self.share_busy = False
         self.url_launcher = ft.UrlLauncher()
+        # Install sticks: this app writes them too.
+        self.file_picker = ft.FilePicker()
+        self.sticks: list[stickmaker.Disk] = []
+        self.stick_writing = False
 
     # -- Startup and connecting ------------------------------------------------
 
@@ -213,6 +220,9 @@ class NanoBorealisApp:
             prefix_icon=ft.Icons.KEY_ROUNDED, autofocus=bool(address), on_submit=self.on_connect_click,
         )
         self.remember = ft.Checkbox(label="Remember on this device", value=True)
+        self.found_status = ft.Text("Looking for NanoBorealis on your network...", size=12,
+                                    color=ft.Colors.ON_SURFACE_VARIANT)
+        self.found_row = ft.Row(wrap=True, spacing=8, run_spacing=8)
         self.connect_error = ft.Text(error, color=ft.Colors.ERROR, size=13, visible=bool(error))
         self.connect_button = ft.FilledButton("Connect", icon=ft.Icons.ARROW_FORWARD_ROUNDED,
                                               height=44, on_click=self.on_connect_click)
@@ -240,17 +250,50 @@ class NanoBorealisApp:
                         ft.Text("NanoBorealis", size=24, weight=ft.FontWeight.W_600),
                         ft.Text("Connect to your agent", color=ft.Colors.ON_SURFACE_VARIANT),
                     ], spacing=0, tight=True)], spacing=14),
+                    self.found_status,
+                    self.found_row,
                     self.address_field,
                     self.password_field,
                     self.remember,
                     self.connect_error,
                     ft.Row([self.connect_button, self.connect_progress], spacing=14),
                     help_text,
+                    ft.Divider(height=1),
+                    ft.TextButton("No NanoBorealis computer yet? Make an install stick",
+                                  icon=ft.Icons.USB_ROUNDED, on_click=on(self.open_stick_dialog)),
                 ],
             ),
         )
         self.page.controls.clear()
         self.page.add(ft.Container(content=self.connect_card, alignment=ft.Alignment.CENTER, expand=True, padding=16))
+        self.page.run_task(self.find_machines, self.found_row)
+
+    async def find_machines(self, row: ft.Row) -> None:
+        """List NanoBorealis machines announcing themselves on this network."""
+        found = await asyncio.to_thread(discovery.browse, 3.0)
+        if self.in_chat_view or row is not self.found_row:
+            return  # the sign-in screen was replaced meanwhile
+        row.controls = [
+            ft.OutlinedButton(f"{f.name} ({f.address})", icon=ft.Icons.COMPUTER_ROUNDED, on_click=on(self.use_found, f))
+            for f in found
+        ]
+        row.controls.append(ft.TextButton("Search again", icon=ft.Icons.REFRESH_ROUNDED,
+                                          on_click=on(self.search_again)))
+        self.found_status.value = ("Found on your network:" if found else
+                                   "No NanoBorealis found on this network. Run nanoborealis remote on there, "
+                                   "or type its address.")
+        self.page.update()
+
+    async def search_again(self) -> None:
+        self.found_status.value = "Looking for NanoBorealis on your network..."
+        self.found_row.controls = []
+        self.page.update()
+        await self.find_machines(self.found_row)
+
+    async def use_found(self, found: discovery.Found) -> None:
+        self.address_field.value = f"{found.address}:{found.port}"
+        self.page.update()
+        await self.password_field.focus()
         self.page.update()
 
     def card_width(self) -> float:
@@ -413,8 +456,19 @@ class NanoBorealisApp:
                 ft.IconButton(ft.Icons.LOGOUT_ROUNDED, icon_size=18, tooltip="Disconnect", on_click=on(self.disconnect)),
             ], spacing=6),
         )
+        stick = ft.Container(
+            padding=ft.Padding.symmetric(horizontal=8),
+            content=ft.Container(
+                border_radius=10, ink=True, padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                on_click=on(self.open_stick_dialog),
+                content=ft.Row([
+                    ft.Icon(ft.Icons.USB_ROUNDED, size=18, color=ft.Colors.ON_SURFACE_VARIANT),
+                    ft.Text("Make an install stick", size=13, expand=True),
+                ], spacing=10),
+            ),
+        )
         return ft.Column(expand=True, spacing=6,
-                         controls=[*top, *([chat_list] if chat_list else []), ft.Divider(height=1), share, bottom])
+                         controls=[*top, *([chat_list] if chat_list else []), ft.Divider(height=1), share, stick, bottom])
 
     def welcome_view(self) -> ft.Control:
         chips = [
@@ -798,6 +852,15 @@ class NanoBorealisApp:
         await self.refresh_chats()
         if reconnect and self.chat_id:
             await self.open_chat(self.chat_id)  # catch up on anything missed while offline
+        if not reconnect and self.link is not None:
+            self.page.run_task(self.keep_chats_fresh, self.link)
+
+    async def keep_chats_fresh(self, link: AgentLink) -> None:
+        """Chats live on the NanoBorealis machine; ones started on another device show up here too."""
+        while self.link is link and self.in_chat_view:
+            await asyncio.sleep(20)
+            if self.link is link and link.connected:
+                await self.refresh_chats()
 
     # -- Compute sharing -----------------------------------------------------------
 
@@ -1023,6 +1086,170 @@ class NanoBorealisApp:
     async def copy_text(self, text: str) -> None:
         await self.clipboard.set(text)
         self.page.show_dialog(ft.SnackBar(ft.Text("Copied"), duration=1500))
+
+    # -- Install sticks ------------------------------------------------------------
+
+    async def open_stick_dialog(self) -> None:
+        if self.in_chat_view and self.page.width and self.page.width < NARROW:
+            await self.page.close_drawer()
+        self.stick_body = ft.Column(tight=True, spacing=12, scroll=ft.ScrollMode.AUTO)
+        self.stick_actions = ft.Row(spacing=8, wrap=True, alignment=ft.MainAxisAlignment.END)
+        self.stick_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Make a NanoBorealis install stick", size=18, weight=ft.FontWeight.W_600),
+            content=ft.Container(self.stick_body, width=520),
+            actions=[self.stick_actions],
+        )
+        self.page.show_dialog(self.stick_dialog)
+        if not self.stick_writing:
+            await self.show_stick_form()
+
+    def set_stick_body(self, controls: list[ft.Control], actions: list[ft.Control]) -> None:
+        self.stick_body.controls = controls
+        self.stick_actions.controls = actions
+        self.page.update()
+
+    async def close_stick_dialog(self) -> None:
+        self.page.pop_dialog()
+
+    async def show_stick_form(self) -> None:
+        self.set_stick_body([self.working("Looking for USB sticks...")], [])
+        try:
+            self.sticks = await asyncio.to_thread(stickmaker.list_sticks)
+        except Exception as e:
+            self.sticks = []
+            print(f"nanoborealis-client: listing sticks failed: {e}")
+        self.stick_choice = ft.Dropdown(
+            label="USB stick", expand=True,
+            options=[ft.DropdownOption(key=s.id, text=s.label) for s in self.sticks],
+            value=self.sticks[0].id if len(self.sticks) == 1 else None,
+        )
+        self.stick_key = ft.TextField(
+            label="OpenRouter API key (optional)", password=True, can_reveal_password=True,
+            helper="Saved on the stick so setup doesn't ask for it. Use a dedicated key with a low credit limit.",
+        )
+        self.stick_iso = ""
+        self.stick_iso_text = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.stick_source = ft.RadioGroup(value="latest", content=ft.Column(tight=True, spacing=0, controls=[
+            ft.Radio(value="latest", label="Download the latest NanoBorealis (about 5.3 GB, straight onto the stick)"),
+            ft.Radio(value="file", label="Use an installer ISO I already have"),
+        ]))
+        if self.sticks:
+            pick = ft.Row([self.stick_choice, ft.IconButton(ft.Icons.REFRESH_ROUNDED, tooltip="Look again",
+                                                            on_click=on(self.show_stick_form))])
+        else:
+            pick = ft.Row([ft.Icon(ft.Icons.USB_ROUNDED, color=ft.Colors.ON_SURFACE_VARIANT),
+                           ft.Text("Plug in a USB stick of 8 GB or more, then look again.", size=13, expand=True),
+                           ft.IconButton(ft.Icons.REFRESH_ROUNDED, tooltip="Look again", on_click=on(self.show_stick_form))])
+        self.set_stick_body([
+            ft.Text("The stick is erased and becomes a NanoBorealis installer. Boot a computer from it to install.",
+                    size=13, color=ft.Colors.ON_SURFACE_VARIANT),
+            pick,
+            self.stick_key,
+            self.stick_source,
+            ft.Row([ft.OutlinedButton("Choose ISO file", icon=ft.Icons.FOLDER_OPEN_ROUNDED, on_click=on(self.pick_iso)),
+                    self.stick_iso_text], spacing=10),
+        ], [
+            ft.TextButton("Cancel", on_click=on(self.close_stick_dialog)),
+            ft.FilledButton("Next", icon=ft.Icons.ARROW_FORWARD_ROUNDED, on_click=on(self.confirm_stick),
+                            disabled=not self.sticks),
+        ])
+
+    async def pick_iso(self) -> None:
+        files = await self.file_picker.pick_files(dialog_title="Choose a NanoBorealis installer ISO",
+                                                  allowed_extensions=["iso"])
+        if files and files[0].path:
+            self.stick_iso = files[0].path
+            self.stick_iso_text.value = os.path.basename(self.stick_iso)
+            self.stick_source.value = "file"
+            self.page.update()
+
+    async def confirm_stick(self) -> None:
+        stick = next((s for s in self.sticks if s.id == self.stick_choice.value), None)
+        if stick is None:
+            self.stick_choice.error_text = "Choose a stick"
+            self.page.update()
+            return
+        if self.stick_source.value == "file" and not self.stick_iso:
+            self.stick_iso_text.value = "Choose the ISO file first"
+            self.page.update()
+            return
+        source = "latest" if self.stick_source.value == "latest" else self.stick_iso
+        key = (self.stick_key.value or "").strip()
+        setup = {"openrouter_api_key": key, "written_by": "NanoBorealis client"} if key else None
+        self.set_stick_body([
+            ft.Row([ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.ERROR),
+                    ft.Text(f"Erase {stick.label}? Everything on it will be lost.", size=14, expand=True)], spacing=10),
+            ft.Text("Windows will ask for permission to write the stick." if sys.platform == "win32"
+                    else "Your system will ask for your password to write the stick.",
+                    size=13, color=ft.Colors.ON_SURFACE_VARIANT),
+        ], [
+            ft.TextButton("Back", on_click=on(self.show_stick_form)),
+            ft.FilledButton("Erase and write", icon=ft.Icons.USB_ROUNDED, bgcolor=ft.Colors.ERROR,
+                            color=ft.Colors.ON_ERROR, on_click=on(self.write_stick, stick, source, setup)),
+        ])
+
+    async def write_stick(self, stick: stickmaker.Disk, source: str, setup: dict | None) -> None:
+        status = ft.Text("Waiting for permission...", size=13)
+        bar = ft.ProgressBar(value=None)
+        self.set_stick_body([status, bar,
+                             ft.Text("Keep the stick plugged in. This takes about ten minutes.", size=12,
+                                     color=ft.Colors.ON_SURFACE_VARIANT)],
+                            [ft.TextButton("Hide", on_click=on(self.close_stick_dialog))])
+        progress_file = os.path.join(tempfile.gettempdir(), f"nanoborealis-stick-{uuid.uuid4().hex[:8]}.json")
+        try:
+            await asyncio.to_thread(stickmaker.launch_elevated, stick, source, setup, progress_file)
+        except stickmaker.StickError as e:
+            self.show_stick_result(False, str(e))
+            return
+        self.stick_writing = True
+        started = time.monotonic()
+        last = None
+        try:
+            while True:
+                await asyncio.sleep(0.5)
+                try:
+                    with open(progress_file, encoding="utf-8") as f:
+                        state = json.load(f)
+                except (OSError, ValueError):
+                    if time.monotonic() - started > 120 and last is None:
+                        self.show_stick_result(False, "The writer never started. Was the permission prompt declined?")
+                        return
+                    continue
+                last = state
+                if state.get("phase") == "error":
+                    self.show_stick_result(False, state.get("error") or "Something went wrong")
+                    return
+                if state.get("phase") == "done":
+                    self.show_stick_result(True, "")
+                    return
+                total = state.get("total") or 0
+                bar.value = (state.get("done", 0) / total) if total else None
+                verb = {"write": "Writing", "verify": "Checking"}.get(state.get("phase"), "")
+                status.value = state.get("message", "")
+                if total and verb:
+                    status.value += f" ({state.get('done', 0) / 1e9:.1f} of {total / 1e9:.1f} GB)"
+                self.page.update()
+        finally:
+            self.stick_writing = False
+            try:
+                os.remove(progress_file)
+            except OSError:
+                pass
+
+    def show_stick_result(self, ok: bool, error: str) -> None:
+        if ok:
+            self.set_stick_body([
+                ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED, color=ft.Colors.GREEN_400),
+                        ft.Text("The stick is ready and verified.", size=14, expand=True)], spacing=10),
+                ft.Text("Boot the new computer from it: open its boot menu at power-on (F9 on HP, F12 on Dell and "
+                        "Lenovo, Option on a Mac), install, and tick \"Make this user administrator\". At first "
+                        "login, setup uses the key you saved on the stick.", size=13),
+            ], [ft.FilledButton("Done", on_click=on(self.close_stick_dialog))])
+        else:
+            self.set_stick_body([ft.Text(f"The stick wasn't written: {error}", size=13, color=ft.Colors.ERROR)],
+                                [ft.TextButton("Close", on_click=on(self.close_stick_dialog)),
+                                 ft.FilledButton("Try again", on_click=on(self.show_stick_form))])
 
     # -- Sending -----------------------------------------------------------------
 

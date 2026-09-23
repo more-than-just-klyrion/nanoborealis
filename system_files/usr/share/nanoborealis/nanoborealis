@@ -129,15 +129,35 @@ case "$cmd" in
         firewalld_port() {  # add|remove; no-op when firewalld isn't running
             if sudo firewall-cmd --state >/dev/null 2>&1; then
                 sudo firewall-cmd --quiet --permanent "--$1-port=8765/tcp" || true
+                [ "$1" = add ] && { sudo firewall-cmd --quiet --permanent --add-service=mdns || true; }
                 sudo firewall-cmd --quiet --reload
             fi
         }
+        # Announced over mDNS (Avahi), so NanoBorealis clients on the network find this machine.
+        announce=/etc/avahi/services/nanoborealis.service
         case "${2:-status}" in
             on)
                 sudo sed -i 's|^PublishPort=.*|PublishPort=8765:8765|' "$quadlet"
                 firewalld_port add
                 agentctl daemon-reload
                 agentctl restart nanobot.service
+                if [ -d /etc/avahi/services ]; then
+                    sudo tee "$announce" >/dev/null <<'XML'
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">NanoBorealis on %h</name>
+  <service>
+    <type>_nanoborealis._tcp</type>
+    <port>8765</port>
+    <txt-record>path=/</txt-record>
+    <txt-record>protocol=nanobot-webui</txt-record>
+  </service>
+</service-group>
+XML
+                    sudo systemctl is-active --quiet avahi-daemon || sudo systemctl enable --now avahi-daemon || true
+                    echo "Announced on the network: NanoBorealis clients here will list this machine."
+                fi
                 echo "Other devices on your network can now reach the agent at:"
                 ip -4 -o addr show scope global | awk '{ split($4, a, "/"); print "  http://" a[1] ":8765" }'
                 echo "Sign in with the password from '$(basename "$0") password'."
@@ -147,6 +167,7 @@ case "$cmd" in
             off)
                 sudo sed -i 's|^PublishPort=.*|PublishPort=127.0.0.1:8765:8765|' "$quadlet"
                 firewalld_port remove
+                sudo rm -f "$announce"
                 agentctl daemon-reload
                 agentctl restart nanobot.service
                 echo "The agent is reachable from this computer only." ;;

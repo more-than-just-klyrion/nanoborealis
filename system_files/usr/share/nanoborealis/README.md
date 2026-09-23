@@ -13,7 +13,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 - **`nanobot-agent`**, an account that can't log in, owns nothing else, and runs the agent
 - **The agent:** nanobot 0.3.5 in a rootless Podman container that systemd runs through Quadlet. Its WebUI is at `http://127.0.0.1:8765`, behind a password, and in the app menu as **NanoBorealis**
 - **Free Nemotron models with automatic fallback:** Ultra 550B, then Super 120B, then Lightning 30B
-- **Skills:** `code-review`, `planning`, `simplify`
+- **Skills:** `code-review`, `debugging`, `git-workflow`, `new-project`, `planning`, `simplify`
 - **`/srv/nanoborealis/projects`**, shared by you and the agent, with a shortcut at `~/nanoborealis-projects`
 
 ## What the agent can and can't do
@@ -56,14 +56,14 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 | `nanoborealis restart` | Restart the agent in a fresh container |
 | `nanoborealis shell` | Open a shell inside the agent's container |
 | `nanoborealis password` | Show the WebUI password |
-| `nanoborealis remote on` / `off` / `status` | Let other devices on your network use the agent through the NanoBorealis client or a browser, or go back to this machine only |
+| `nanoborealis remote on` / `off` / `status` | Let other devices on your network use the agent through the NanoBorealis client or a browser, or go back to this machine only. While it's on, this machine announces itself over mDNS so clients find it without an address |
 | `nanoborealis compute add` / `remove` / `use` / `list` | Run the agent on a model hosted by another device. The NanoBorealis client sets the device up and shows the exact `add` command; `use <name>` makes it the first choice, `use cloud` switches back |
 | `nanoborealis set-key` | Swap the OpenRouter key |
 | `nanoborealis rebuild [X.Y.Z]` | Rebuild the agent's container, optionally at a new nanobot version |
 | `nanoborealis reset` | **Delete** the agent's home (memory, sessions, settings, tools) and start fresh. Projects are kept |
 | `nanoborealis uninstall` | Remove the agent and its account. Projects are kept |
 
-`nanoborealis` works as a name for the same command.
+The earlier names `nanoaurora` and `nanobot-os` still work as well.
 
 **The container is disposable; the home is not.** The agent's home directory, including config, memory, sessions, skills, and anything installed there, lives on the `nanobot-home` volume and survives restarts and rebuilds. Packages installed with apt disappear when the container is recreated, unless they're listed in `~/.config/nanoborealis/apt-packages`.
 

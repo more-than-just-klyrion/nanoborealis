@@ -1,7 +1,10 @@
 # NanoBorealis client
 
-A desktop and mobile app for chatting with your NanoBorealis agent from another computer or phone. It speaks the same protocol as the agent's built-in WebUI, so it sees the same chats.
+The NanoBorealis app, for desktop and mobile. Use it to chat with your agent from any computer or phone, lend a device's hardware to the agent, and make install sticks for new computers.
 
+Your chats live on the NanoBorealis machine, so they carry over everywhere. A chat started in the WebUI on the laptop, in this app on your PC, or on your phone shows up in all of them. The chat list refreshes by itself, and a chat open on two devices updates on both as the agent replies.
+
+- Finds NanoBorealis machines on your network by itself
 - Chat list with history, and new chats
 - Replies stream in as the agent writes them, rendered as Markdown with highlighted code
 - The agent's thinking and each tool it runs, collapsed under the reply, with the tool's output one click away
@@ -18,9 +21,19 @@ nanoborealis remote on     # lets devices on your network reach the agent; print
 nanoborealis password      # the password to sign in with
 ```
 
-Then enter that address and password in the client. **Remember on this device** stores both in the app's local storage, unencrypted, so only tick it on your own devices.
+The client lists NanoBorealis machines it finds on your network (they announce themselves over mDNS, like printers), so usually you just pick yours and enter the password. You can also type the address `remote on` printed.  **Remember on this device** stores both in the app's local storage, unencrypted, so only tick it on your own devices.
 
 The connection is plain HTTP. Anyone watching the network could read the password, so use remote access on networks you trust. `nanoborealis remote off` closes it again.
+
+## Make an install stick
+
+**Make an install stick** (on the sign-in screen and in the sidebar) turns a USB stick into a NanoBorealis installer:
+
+1. Pick the stick. Only USB drives of 8 to 512 GB are offered, never the system disk or a large external drive.
+2. Optionally paste your OpenRouter API key. It goes on the stick, and setup on the new computer uses it instead of asking.
+3. Choose the latest release or an ISO you already have. The latest release streams straight onto the stick, with no copy on this computer.
+
+Writing a whole disk needs administrator rights, so your system asks for permission once. The app writes the installer byte for byte, then the key block just past it, and reads everything back to check it. The installer image itself isn't modified, so its checksum and the installer's media check still pass. The key sits on the stick unencrypted, so treat the stick like a password.
 
 ## Share a device's hardware with the agent
 

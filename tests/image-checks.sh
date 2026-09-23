@@ -51,6 +51,7 @@ fi
 for tool in nft konsole podman python3 bootc flatpak; do
     expect "$tool is present" command -v "$tool"
 done
+expect "Avahi can announce this machine to clients (nanoborealis remote on)" test -d /etc/avahi/services
 
 # The migration from earlier names, run against a simulated NanoAurora-era layout. This runs in
 # a throwaway container, so it may change things.
