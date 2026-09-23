@@ -1,0 +1,34 @@
+# Quadlet unit for the agent. install.sh copies it to
+# ~nanobot-agent/.config/containers/systemd/, and systemd runs it as a user service.
+
+[Unit]
+Description=nanobot OS agent (gateway + WebUI)
+
+[Container]
+Image=localhost/nanobot-os:latest
+Pull=never
+ContainerName=nanobot
+Exec=gateway --foreground
+
+# Everything nanobot keeps lives on this volume; the container is disposable.
+Volume=nanobot-data:/home/nanobot/.nanobot
+
+# Maps the host agent account onto the image's uid 1000 so volume files are writable.
+UserNS=keep-id:uid=1000,gid=1000
+
+# WebUI on this machine's loopback only. The password is still required.
+PublishPort=127.0.0.1:8765:8765
+
+Secret=openrouter_api_key,type=env,target=OPENROUTER_API_KEY
+Secret=nanobot_webui_secret,type=env,target=NANOBOT_WEBUI_SECRET
+
+DropCapability=ALL
+NoNewPrivileges=true
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

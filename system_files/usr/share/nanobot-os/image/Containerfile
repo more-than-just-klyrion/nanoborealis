@@ -1,0 +1,33 @@
+# nanobot from the pinned PyPI release (prebuilt WebUI included) on the same base
+# the official nanobot image uses. It runs as an unprivileged user from the first
+# instruction on, so unlike the official image it needs no Linux capabilities.
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+ARG NANOBOT_VERSION=0.3.5
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl git jq less libmagic1 openssh-client procps ripgrep unzip \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --uid 1000 --shell /bin/bash nanobot
+
+COPY entrypoint.sh /usr/local/bin/nanobot-entrypoint
+COPY seed/ /opt/nanobot-seed/
+RUN sed -i 's/\r$//' /usr/local/bin/nanobot-entrypoint \
+ && chmod 0755 /usr/local/bin/nanobot-entrypoint \
+ && chmod -R a+rX /opt/nanobot-seed
+
+USER nanobot
+WORKDIR /home/nanobot
+ENV HOME=/home/nanobot \
+    PATH=/home/nanobot/.local/bin:$PATH \
+    UV_PYTHON_PREFERENCE=only-system \
+    PYTHONUNBUFFERED=1
+
+RUN uv tool install --python 3.12 "nanobot-ai==${NANOBOT_VERSION}" \
+ && nanobot --version
+
+EXPOSE 8765
+ENTRYPOINT ["/usr/local/bin/nanobot-entrypoint"]
+CMD ["gateway", "--foreground"]

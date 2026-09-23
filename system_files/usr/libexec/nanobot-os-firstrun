@@ -1,0 +1,24 @@
+#!/usr/bin/bash
+# Opens the nanobot OS installer in a terminal at login: once, and only for administrators.
+set -u
+
+marker="${XDG_STATE_HOME:-$HOME/.local/state}/nanobot-os/firstrun-done"
+
+if [ "${1:-}" = "--run" ]; then
+    cd /usr/share/nanobot-os || exit 1
+    if bash install.sh; then
+        mkdir -p "$(dirname "$marker")" && touch "$marker"
+        echo
+        echo "nanobot OS is ready. Open 'nanobot' from the app menu. You can close this window."
+    else
+        echo
+        echo "Setup didn't finish. It will open again at your next login, or run it any time with:"
+        echo "  bash /usr/share/nanobot-os/install.sh"
+    fi
+    exit 0
+fi
+
+[ -e "$marker" ] && exit 0
+id -nG | tr ' ' '\n' | grep -qx wheel || exit 0
+
+exec konsole --hold -e /usr/libexec/nanobot-os-firstrun --run

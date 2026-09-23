@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=nanobot OS setup
+Comment=Finishes setting up nanobot OS on first login
+Exec=/usr/libexec/nanobot-os-firstrun
+Icon=utilities-terminal
+Terminal=false
+NoDisplay=true
+X-KDE-autostart-phase=2

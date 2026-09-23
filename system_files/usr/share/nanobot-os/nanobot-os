@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Manage the nanobot OS agent. Installed to /usr/local/bin by install.sh.
+# Run as your normal user; it uses sudo where it needs to.
+set -euo pipefail
+
+AGENT_USER="nanobot-agent"
+IMAGE="localhost/nanobot-os:latest"
+WEBUI_URL="http://127.0.0.1:8765"
+
+usage() {
+    cat <<EOF
+Usage: nanobot-os <command>
+
+  open              open the WebUI ($WEBUI_URL)
+  status            show the service status
+  logs              follow the agent's logs
+  restart           restart the agent (fresh container, same memory and settings)
+  shell             open a shell inside the agent's container
+  password          show the WebUI password
+  set-key           replace the OpenRouter API key
+  rebuild [X.Y.Z]   rebuild the image (optionally at a new nanobot version) and restart
+  reset             DELETE the agent's memory, sessions, skills, and settings
+  uninstall         remove nanobot OS and the $AGENT_USER account
+EOF
+}
+
+cmd="${1:-help}"
+case "$cmd" in
+    help|-h|--help) usage; exit 0 ;;
+esac
+
+id "$AGENT_USER" >/dev/null 2>&1 || { echo "nanobot OS is not installed ($AGENT_USER not found)" >&2; exit 1; }
+AGENT_UID="$(id -u "$AGENT_USER")"
+AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
+
+as_agent() {
+    ( cd / && sudo -u "$AGENT_USER" env \
+        HOME="$AGENT_HOME" \
+        XDG_RUNTIME_DIR="/run/user/$AGENT_UID" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$AGENT_UID/bus" \
+        "$@" )
+}
+agentctl() { sudo systemctl --user -M "$AGENT_USER@" "$@"; }
+
+confirm() {
+    local reply
+    read -r -p "$1 Type 'yes' to continue: " reply
+    [ "$reply" = "yes" ]
+}
+
+case "$cmd" in
+    open)
+        xdg-open "$WEBUI_URL" ;;
+    status)
+        agentctl status nanobot.service --no-pager ;;
+    logs)
+        as_agent podman logs --follow --tail 200 nanobot \
+            || sudo journalctl --follow --lines 200 "_UID=$AGENT_UID" ;;
+    restart)
+        agentctl restart nanobot.service ;;
+    shell)
+        as_agent podman exec -it nanobot bash ;;
+    password)
+        as_agent podman secret inspect --showsecret --format '{{.SecretData}}' nanobot_webui_secret
+        echo ;;
+    set-key)
+        read -r -s -p "New OpenRouter API key: " key; echo
+        [ -n "$key" ] || { echo "no key entered" >&2; exit 1; }
+        printf '%s' "$key" | as_agent podman secret create --replace openrouter_api_key - >/dev/null
+        unset key
+        agentctl restart nanobot.service
+        echo "key replaced; agent restarted" ;;
+    rebuild)
+        build="$AGENT_HOME/nanobot-os"
+        if [ -d /usr/share/nanobot-os/image ]; then
+            # On a nanobot OS image, pick up the container definition shipped with the latest OS update.
+            sudo rm -rf "$build/image"
+            sudo cp -R /usr/share/nanobot-os/image "$build/image"
+            sudo chown -R "$AGENT_USER:$AGENT_USER" "$build/image"
+        fi
+        version="${2:-$(sudo cat "$build/VERSION")}"
+        as_agent podman build --pull=newer --build-arg "NANOBOT_VERSION=$version" -t "$IMAGE" "$build/image"
+        printf '%s\n' "$version" | sudo tee "$build/VERSION" >/dev/null
+        agentctl restart nanobot.service
+        echo "rebuilt with nanobot $version; agent restarted" ;;
+    reset)
+        confirm "This deletes the agent's memory, sessions, skills, and settings." || exit 1
+        agentctl stop nanobot.service
+        as_agent podman volume rm nanobot-data
+        agentctl start nanobot.service
+        echo "reset; config and skills re-seeded from the image" ;;
+    uninstall)
+        confirm "This removes the agent, its data, its image, its secrets, and the $AGENT_USER account." || exit 1
+        agentctl stop nanobot.service 2>/dev/null || true
+        sudo rm -f "$AGENT_HOME/.config/containers/systemd/nanobot.container"
+        agentctl daemon-reload 2>/dev/null || true
+        as_agent podman system reset --force 2>/dev/null || true
+        sudo loginctl disable-linger "$AGENT_USER" || true
+        sudo loginctl terminate-user "$AGENT_USER" 2>/dev/null || true
+        removed=0
+        for _ in $(seq 1 15); do
+            if sudo userdel --remove "$AGENT_USER" 2>/dev/null; then removed=1; break; fi
+            sleep 1
+        done
+        [ "$removed" -eq 1 ] || { echo "could not remove $AGENT_USER; run: sudo userdel --remove $AGENT_USER" >&2; exit 1; }
+        rm -f "$HOME/.local/share/applications/nanobot-os.desktop"
+        sudo rm -f /usr/local/bin/nanobot-os
+        echo "nanobot OS removed" ;;
+    *)
+        echo "unknown command: $cmd" >&2
+        usage >&2
+        exit 2 ;;
+esac
