@@ -190,8 +190,26 @@ sudo install -d -o "$AGENT_USER" -g "$AGENT_USER" -m 0700 \
     "$AGENT_HOME/.config" "$AGENT_HOME/.config/containers" "$QDIR"
 sudo install -o "$AGENT_USER" -g "$AGENT_USER" -m 0644 "$KIT/nanobot.container" "$QDIR/nanobot.container"
 agentctl daemon-reload
-agentctl cat nanobot.service >/dev/null 2>&1 || die "Quadlet did not generate nanobot.service. Debug with:
-      sudo -u $AGENT_USER /usr/libexec/podman/quadlet -dryrun -user"
+# The generator runs on each reload. Right after the account's services start (first login),
+# give it a few tries before calling it a failure.
+for _ in 1 2 3 4 5; do
+    agentctl cat nanobot.service >/dev/null 2>&1 && break
+    sleep 3
+    agentctl daemon-reload
+done
+if ! agentctl cat nanobot.service >/dev/null 2>&1; then
+    # Say why, in the setup window and in a log, instead of leaving it to guesswork.
+    quadlet_log="$HOME/nanoborealis-setup-quadlet.log"
+    quadlet="$(ls /usr/libexec/podman/quadlet /usr/lib/systemd/user-generators/podman-user-generator 2>/dev/null | head -n 1)"
+    {
+        echo "== $(date) =="; ls -la "$QDIR"; echo
+        as_agent env QUADLET_UNIT_DIRS="$QDIR" "$quadlet" -dryrun -user 2>&1 | tail -40
+        echo; sudo systemctl --user -M "$AGENT_USER@" status --no-pager 2>&1 | head -15
+    } > "$quadlet_log" 2>&1
+    warn "Quadlet did not turn the agent's service file into a service. What it reported:"
+    grep -v '^\[' "$quadlet_log" | tail -20 | sed 's/^/          /'
+    die "setup stopped here; the full report is in $quadlet_log"
+fi
 agentctl restart nanobot.service
 ok "nanobot.service running as $AGENT_USER"
 
