@@ -39,18 +39,55 @@ def candidates() -> list[str]:
     return [f"/dev/{name}" for name in names if not name.startswith(skip)]
 
 
+SCAN = 64  # 1 MiB steps searched past the image's end
+
+
+def align_up(value: int) -> int:
+    return -(-value // ALIGN) * ALIGN
+
+
+def image_ends(disk) -> list[int]:
+    """Where the installer image may end. The ISO 9660 volume size is the reliable one; the
+    GPT backup header only counts if nothing moved it to the end of the stick (Windows and
+    partition tools "repair" GPTs that way)."""
+    ends = []
+    disk.seek(16 * 2048)  # the primary volume descriptor
+    pvd = disk.read(2048)
+    if pvd[1:6] == b"CD001":
+        blocks = int.from_bytes(pvd[80:84], "little")
+        size = int.from_bytes(pvd[128:130], "little") or 2048
+        ends.append(blocks * size)
+    disk.seek(0)
+    head = disk.read(4096)
+    if head[512:520] == b"EFI PART":
+        ends.append((struct.unpack_from("<Q", head, 512 + 32)[0] + 1) * 512)
+    return ends
+
+
 def read_setup(device: str) -> bytes | None:
     """Return the verified JSON payload stored on `device`, or None."""
+    need = align_up(len(MAGIC) + 128 + MAX_PAYLOAD)
+    block = b""
     try:
-        with open(device, "rb") as disk:
-            disk.seek(512)
-            header = disk.read(92)
-            if header[:8] != b"EFI PART":
-                return None
-            backup_lba = struct.unpack_from("<Q", header, 32)[0]
-            offset = -(-(backup_lba + 1) * 512 // ALIGN) * ALIGN
-            disk.seek(offset)
-            block = disk.read(len(MAGIC) + 128 + MAX_PAYLOAD)
+        with open(device, "rb", buffering=0) as disk:
+            tried = set()
+            for end in image_ends(disk):
+                for step in range(SCAN):
+                    offset = align_up(end) + step * ALIGN
+                    if offset in tried:
+                        continue
+                    tried.add(offset)
+                    try:
+                        disk.seek(offset)
+                        first = disk.read(4096)
+                    except OSError:
+                        break  # past the end of the device
+                    if first.startswith(MAGIC):
+                        disk.seek(offset)
+                        block = disk.read(need)
+                        break
+                if block:
+                    break
     except OSError:
         return None
     if not block.startswith(MAGIC):
