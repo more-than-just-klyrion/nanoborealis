@@ -66,12 +66,13 @@ jobs:
           echo "acceleration: ${accel:-none}"
           qemu-system-x86_64 $accel -m 4096 -smp 2 -machine q35 -bios /usr/share/ovmf/OVMF.fd \
             -cdrom installer.iso -display none -vga std -monitor unix:/tmp/mon,server,nowait -daemonize
-          shot() { sleep "$1"; echo "screendump look/$2.ppm" | socat - UNIX-CONNECT:/tmp/mon >/dev/null 2>&1 || python3 - "$2" <<'EOF'
+          shot() { sleep "$1"; echo "screendump $PWD/look/$2.ppm" | socat - UNIX-CONNECT:/tmp/mon >/dev/null 2>&1 || python3 - "$2" <<'EOF'
           import socket, sys
           s = socket.socket(socket.AF_UNIX); s.connect("/tmp/mon"); s.send(f"screendump look/{sys.argv[1]}.ppm\n".encode()); s.close()
           EOF
           }
           mkdir -p look
+          xorriso -indev installer.iso -find /images -name product.img 2>/dev/null || true
           shot 15 01-boot-menu
           shot 240 02-installer
           shot 180 03-installer-later

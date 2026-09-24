@@ -115,6 +115,19 @@ jobs:
           set -euo pipefail
           iso="$(find "$OUT_DIR" -name '*.iso' | head -n 1)"
           [ -n "$iso" ] || { echo "no ISO found in $OUT_DIR"; exit 1; }
+
+          # The installer's own look: Anaconda loads images/product.img from the install media
+          # and lays it over its files, so our artwork and colors replace Fedora's. Boot records
+          # (El Torito, MBR, GPT, the EFI partition) are replayed unchanged.
+          sudo apt-get install -y -q xorriso cpio >/dev/null
+          stage="$(mktemp -d)"
+          mkdir -p "$stage/usr/share/anaconda"
+          cp -r "$GITHUB_WORKSPACE/branding/installer/pixmaps" "$stage/usr/share/anaconda/"
+          (cd "$stage" && find . | cpio --quiet -o -H newc | gzip -9 > "$RUNNER_TEMP/product.img")
+          xorriso -indev "$iso" -outdev "$iso.branded" -boot_image any replay \
+            -map "$RUNNER_TEMP/product.img" /images/product.img -commit
+          xorriso -indev "$iso.branded" -report_el_torito plain
+          mv "$iso.branded" "$iso"
           day="$(date -u +%Y%m%d)"
           tag="nanoborealis-${day}-$(date -u +%H%M)"
           name="NanoBorealis-${day}-x86_64.iso"
