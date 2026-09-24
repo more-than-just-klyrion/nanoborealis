@@ -12,9 +12,10 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") <command>
 
-  update [--testing] [--yes]
+  update [--stable|--testing|--dev] [--yes]
                     check for a newer NanoBorealis build, then download it and your app updates
-                    (reboot to apply). --testing follows the testing channel instead of stable.
+                    (reboot to apply). This computer stays on the build it follows; --stable,
+                    --testing or --dev moves it (dev: every build; testing: candidates).
   rollback          go back to the build you ran before the last update (reboot to apply)
   version           show which build is running and which channel it follows
   open              open the WebUI ($WEBUI_URL)
@@ -72,18 +73,27 @@ cmd="${1:-help}"
 case "$cmd" in
     help|-h|--help) usage; exit 0 ;;
     update)
-        # Works even before the agent is installed. Updates never happen on their own: builds
-        # reach the stable channel only after they pass testing, and only when you run this.
-        channel=stable; assume_yes=0
+        # Works even before the agent is installed. Updates never happen on their own, and a
+        # computer keeps following its build (stable, testing or dev) until told otherwise.
+        channel=""; assume_yes=0
         for arg in "${@:2}"; do
             case "$arg" in
+                --stable) channel=stable ;;
                 --testing) channel=testing ;;
+                --dev) channel=dev ;;
                 --yes|-y) assume_yes=1 ;;
                 *) echo "unknown option: $arg" >&2; exit 2 ;;
             esac
         done
-        want="$OS_IMAGE:$channel"
         tracked="$(tracked_image)"
+        if [ -z "$channel" ]; then
+            case "$tracked" in  # under this name or an earlier one
+                */nanoborealis:testing) channel=testing ;;
+                */nanoborealis:dev) channel=dev ;;
+                *) channel=stable ;;
+            esac
+        fi
+        want="$OS_IMAGE:$channel"
         # Only move to a new address once it's published there (e.g. while the project moves
         # to a new GitHub name); until then, keep updating from where this system already is.
         if [ -n "$tracked" ] && [ "$tracked" != "$want" ] && command -v skopeo >/dev/null \

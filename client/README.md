@@ -31,7 +31,8 @@ The connection is plain HTTP. Anyone watching the network could read the passwor
 
 1. Pick the stick. Only USB drives of 8 to 512 GB are offered, never the system disk or a large external drive.
 2. Optionally paste your OpenRouter API key. It goes on the stick, and setup on the new computer uses it instead of asking.
-3. Choose the latest release or an ISO you already have. The latest release streams straight onto the stick, with no copy on this computer.
+3. Pick the **NanoBorealis build**: **Stable** (tested releases, recommended), **Testing** (candidates for the next stable build) or **Development** (every build). The installer carries the stable build; with Testing or Development, the new computer follows that build and moves onto it at first login.
+4. Choose the latest release or an ISO you already have. The latest release streams straight onto the stick, with no copy on this computer.
 
 Writing a whole disk needs administrator rights, so your system asks for permission once. The app writes the installer byte for byte, then the key block just past it, and reads everything back to check it. The installer image itself isn't modified, so its checksum and the installer's media check still pass. The key sits on the stick unencrypted, so treat the stick like a password.
 

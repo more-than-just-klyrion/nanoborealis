@@ -49,7 +49,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 
 | Command | Does |
 |---|---|
-| `nanoborealis update` | Check the stable channel for a newer build, show what's new, and download it if you agree, along with app updates. It takes effect at the next reboot. `--testing` follows the testing channel |
+| `nanoborealis update` | Check the build this computer follows for something newer, show what's new, and download it if you agree, along with app updates. It takes effect at the next reboot. `--stable`, `--testing` or `--dev` moves the computer to that build: stable is tested releases, testing is candidates for the next one, dev is every build |
 | `nanoborealis rollback` | Go back to the build you ran before the last update (then reboot) |
 | `nanoborealis version` | Show which build is running, which one is staged, and which channel this system follows |
 | `nanoborealis open` | Open the WebUI |

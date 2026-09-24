@@ -40,6 +40,12 @@ PREF_CLIENT_ID = "nanoborealis.client_id"
 PREF_COMPUTE = "nanoborealis.compute"  # JSON: consent, token, served model, speeds
 PREF_AUTO_UPDATE = "nanoborealis.auto_update"  # "1": install new app versions without asking
 PREF_UPDATE_CHANNEL = "nanoborealis.update_channel"  # stable, testing or dev
+# The NanoBorealis build an install stick sets up: the same three tiers as the OS images.
+STICK_BUILDS = [
+    ("stable", "Stable: tested releases (recommended)"),
+    ("testing", "Testing: candidates for the next stable build"),
+    ("dev", "Development: every build, newest and least tested"),
+]
 CHANNEL_NAMES = {
     "stable": ("Stable", "Tested releases. Recommended."),
     "testing": ("Testing", "Candidates for the next stable version, a few days early."),
@@ -1315,6 +1321,10 @@ class NanoBorealisApp:
             helper="Saved on the stick so setup doesn't ask for it. Use a dedicated key with a low credit limit.",
             helper_max_lines=2, expand=True,
         )
+        self.stick_channel = ft.Dropdown(
+            label="NanoBorealis build", value="stable", dense=True, expand=True,
+            options=[ft.DropdownOption(key=key, text=text) for key, text in STICK_BUILDS],
+        )
         self.stick_iso = ""
         self.stick_iso_text = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         self.stick_source = ft.RadioGroup(value="latest", content=ft.Column(tight=True, spacing=0, controls=[
@@ -1333,6 +1343,9 @@ class NanoBorealisApp:
                     size=13, color=ft.Colors.ON_SURFACE_VARIANT),
             pick,
             ft.Row([self.stick_key]),
+            ft.Row([self.stick_channel]),
+            ft.Text("Testing and Development install from the stable installer, then move to that build at "
+                    "first login (one more download).", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
             self.stick_source,
             ft.Row([ft.OutlinedButton("Choose ISO file", icon=ft.Icons.FOLDER_OPEN_ROUNDED, on_click=on(self.pick_iso)),
                     self.stick_iso_text], spacing=10),
@@ -1363,10 +1376,21 @@ class NanoBorealisApp:
             return
         source = "latest" if self.stick_source.value == "latest" else self.stick_iso
         key = (self.stick_key.value or "").strip()
-        setup = {"openrouter_api_key": key, "written_by": "NanoBorealis client"} if key else None
+        channel = self.stick_channel.value or "stable"
+        # What the installed system reads from the stick: the key, and which build to follow.
+        setup: dict[str, str] | None = {"written_by": "NanoBorealis client"}
+        if key:
+            setup["openrouter_api_key"] = key
+        if channel != "stable":
+            setup["channel"] = channel
+        if len(setup) == 1:
+            setup = None
+        build = dict(STICK_BUILDS)[channel].split(":")[0]
         self.set_stick_body([
             ft.Row([ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.ERROR),
                     ft.Text(f"Erase {stick.label}? Everything on it will be lost.", size=14, expand=True)], spacing=10),
+            ft.Text(f"Build: {build}" + ("" if channel == "stable" else " (installs stable, then moves to it at first login)"),
+                    size=13),
             ft.Text("Windows will ask for permission to write the stick." if sys.platform == "win32"
                     else "Your system will ask for your password to write the stick.",
                     size=13, color=ft.Colors.ON_SURFACE_VARIANT),

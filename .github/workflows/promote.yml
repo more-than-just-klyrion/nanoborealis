@@ -1,17 +1,23 @@
 ---
-name: Promote a build to stable
+name: Promote a build
 
-# Installed systems and the installer ISO follow :stable, and this is the only way a build gets
-# there: by hand, after it has run on a testing machine. It re-checks the exact build, confirms
-# its commit's test runs passed, then tags that digest stable. Systems still following the old
-# name (nanobot-os:latest) get the same build, which moves them to the new name.
+# Three tiers, as installed systems follow them: dev (every build, published automatically),
+# testing (candidates) and stable (what installers carry and most systems follow). A build only
+# reaches testing or stable here, by hand. This re-checks the exact build, confirms its
+# commit's test runs passed, then tags that digest. Promoting to stable also serves systems
+# still following the old name (nanobot-os:latest), which moves them to the new one.
 on:
   workflow_dispatch:
     inputs:
       source:
-        description: "Tag or digest to promote (default: the newest testing build)"
+        description: "Tag or digest to promote (default: the newest dev build)"
         required: false
-        default: "testing"
+        default: "dev"
+      channel:
+        description: "Promote to"
+        type: choice
+        options: [stable, testing]
+        default: stable
 
 concurrency:
   group: promote
@@ -27,6 +33,7 @@ jobs:
       actions: read
     env:
       SOURCE: ${{ inputs.source }}
+      CHANNEL: ${{ inputs.channel || 'stable' }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
@@ -78,13 +85,14 @@ jobs:
           podman pull "$IMAGE@$DIGEST"
           podman run --rm --entrypoint /usr/bin/bash -v "$PWD/tests:/tests:ro" "$IMAGE@$DIGEST" /tests/image-checks.sh
 
-      - name: Tag it stable
+      - name: Tag it
         run: |
-          skopeo copy --all "docker://$IMAGE@$DIGEST" "docker://$IMAGE:stable"
-          skopeo copy --all "docker://$IMAGE@$DIGEST" "docker://$IMAGE:stable-$(date -u +%Y%m%d)"
-          echo "stable is now $DIGEST ($VERSION)"
+          skopeo copy --all "docker://$IMAGE@$DIGEST" "docker://$IMAGE:$CHANNEL"
+          skopeo copy --all "docker://$IMAGE@$DIGEST" "docker://$IMAGE:$CHANNEL-$(date -u +%Y%m%d)"
+          echo "$CHANNEL is now $DIGEST ($VERSION)"
 
       - name: Keep systems on the old name updating
+        if: env.CHANNEL == 'stable'
         run: |
           if skopeo copy --all "docker://$IMAGE@$DIGEST" "docker://$LEGACY_IMAGE:latest"; then
             echo "LEGACY_OK=1" >> "$GITHUB_ENV"
@@ -93,6 +101,7 @@ jobs:
           fi
 
       - name: Install Cosign
+        if: env.LEGACY_OK == '1'
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: 'v3.1.2'

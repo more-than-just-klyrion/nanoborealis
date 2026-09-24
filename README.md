@@ -89,7 +89,7 @@ More about the app, including sharing a computer's GPU with the agent, is in [`c
 NanoBorealis is a [bootc](https://containers.github.io/bootc/) image: the whole OS is one signed container image, rebuilt from the latest Aurora every day.
 
 - **Every build is checked** before it's published: [`tests/image-checks.sh`](tests/image-checks.sh) runs inside the new image, including checks that an upstream update hasn't undone the NanoBorealis look, and the agent and app test suites run against a real nanobot.
-- **Testing, then stable.** Builds land on the `testing` channel. A build reaches `stable`, which installed systems and the installer follow, only when it's promoted by hand.
+- **Dev, testing, stable.** Every build lands on `dev`. A build reaches `testing`, and then `stable` (what the installer carries), only when it's promoted by hand. The app's install stick picks which one a new computer follows, and `nanoborealis update --stable`, `--testing` or `--dev` moves an installed one. The app has the same three channels for its own updates.
 - **Signed.** Images are signed with [cosign](https://github.com/sigstore/cosign), and [`cosign.pub`](cosign.pub) verifies them.
 - **Pools are proven** before they ship: CI splits one model across two [exo](https://github.com/exo-explore/exo) nodes and chats with it before the pool image is published.
 
