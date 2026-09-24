@@ -375,12 +375,27 @@ def _cli(argv: list[str]) -> int:
     opts = dict(zip(argv[1::2], argv[2::2]))
     progress_file = opts["--progress"]
 
+    last = ["", 0.0]  # the last update written: phase, time
+
     def report(phase: str, done: int, total: int, message: str, error: str = "") -> None:
+        # Windows refuses to replace a file while the app has it open to read, so a progress
+        # update can collide with the app polling. That must never end the write: retry briefly,
+        # and skip an in-between update rather than fail. The final result keeps trying.
+        final = phase in ("done", "error")
+        now = time.monotonic()
+        if not final and phase == last[0] and now - last[1] < 0.25:
+            return  # the app polls twice a second; more updates only add collisions
+        last[0], last[1] = phase, now
         tmp = progress_file + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as out:
-            json.dump({"phase": phase, "done": done, "total": total, "message": message, "error": error,
-                       "time": time.time()}, out)
-        os.replace(tmp, progress_file)
+        for attempt in range(400 if final else 8):
+            try:
+                with open(tmp, "w", encoding="utf-8") as out:
+                    json.dump({"phase": phase, "done": done, "total": total, "message": message,
+                               "error": error, "time": time.time()}, out)
+                os.replace(tmp, progress_file)
+                return
+            except PermissionError:
+                time.sleep(0.025)
 
     # A record of each run that outlives the progress file, for when a write fails. It holds
     # steps and errors only, never the setup (which carries the key).
