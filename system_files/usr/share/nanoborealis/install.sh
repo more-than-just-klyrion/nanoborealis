@@ -119,8 +119,11 @@ as_agent() {
         "$@" )
 }
 agentctl() { sudo systemctl --user -M "$AGENT_USER@" "$@"; }
+# Whether the agent's service manager has a unit. Not `systemctl cat`: it refuses another
+# user's units ("Cannot remotely cat units"), so it always reports the unit as missing.
+agent_has() { [ "$(agentctl show -p LoadState --value "$1" 2>/dev/null)" = loaded ]; }
 
-if agentctl cat nanobot.service >/dev/null 2>&1; then
+if agent_has nanobot.service; then
     agentctl stop nanobot.service || true
     ok "stopped the running agent for the upgrade"
 fi
@@ -193,11 +196,11 @@ agentctl daemon-reload
 # The generator runs on each reload. Right after the account's services start (first login),
 # give it a few tries before calling it a failure.
 for _ in 1 2 3 4 5; do
-    agentctl cat nanobot.service >/dev/null 2>&1 && break
+    agent_has nanobot.service && break
     sleep 3
     agentctl daemon-reload
 done
-if ! agentctl cat nanobot.service >/dev/null 2>&1; then
+if ! agent_has nanobot.service; then
     # Say why, in the setup window and in a log, instead of leaving it to guesswork.
     quadlet_log="$HOME/nanoborealis-setup-quadlet.log"
     quadlet="$(ls /usr/libexec/podman/quadlet /usr/lib/systemd/user-generators/podman-user-generator 2>/dev/null | head -n 1)"

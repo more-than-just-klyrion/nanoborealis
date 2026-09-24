@@ -40,7 +40,11 @@ expect "pool node service template" grep -q '^Image=ghcr.io/more-than-just-kyrio
 expect "pool relay service installed" test -f /usr/lib/systemd/system/nanoborealis-pool-relay.service
 
 # The agent's and the pool node's service files must turn into services with this image's own
-# Podman: setup stops with "Quadlet did not generate nanobot.service" otherwise.
+# Podman: setup stops with "Quadlet did not turn the agent's service file into a service" otherwise.
+# And setup must look for them in a way that works on another user's services: `systemctl cat`
+# refuses those ("Cannot remotely cat units"), which once failed every install at this step.
+expect "setup checks the agent's services without systemctl cat" \
+    bash -c '! grep -nE "(agentctl|poolctl) cat|--user -M [^;|]* cat " /usr/share/nanoborealis/install.sh /usr/share/nanoborealis/nanoborealis'
 quadlet="$(ls /usr/libexec/podman/quadlet /usr/lib/systemd/user-generators/podman-user-generator 2>/dev/null | head -n 1)"
 units="$(mktemp -d)"
 cp /usr/share/nanoborealis/nanobot.container "$units/"

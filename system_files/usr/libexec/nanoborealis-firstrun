@@ -8,18 +8,16 @@ if [ "${1:-}" = "--run" ]; then
     cd /usr/share/nanoborealis || exit 1
     if bash install.sh; then
         mkdir -p "$(dirname "$marker")" && touch "$marker"
-        # Installed from a stick set to the testing or dev build: move onto it now. (The installer
-        # itself carries the stable build; the stick told it which one to follow.)
+        # Installed from a stick set to the testing or dev build: bring it up to date now. A stable
+        # installer written for one of those builds has only pointed the computer at it, and a
+        # testing or dev installer can be a build or two behind. `update` says whether to restart.
         tracked="$(sudo bootc status --format=json 2>/dev/null \
             | python3 -c 'import json, sys; print(((json.load(sys.stdin).get("spec") or {}).get("image") or {}).get("image", ""))' 2>/dev/null)"
         case "$tracked" in
             *:testing|*:dev)
                 echo
-                echo "This computer follows the ${tracked##*:} build. Getting it now..."
-                if nanoborealis update --yes; then
-                    echo
-                    echo "Restart to start the ${tracked##*:} build: systemctl reboot"
-                fi ;;
+                echo "This computer follows the ${tracked##*:} build. Checking for a newer one..."
+                nanoborealis update --yes || true ;;
         esac
         echo
         echo "NanoBorealis is ready. Open 'NanoBorealis' from the app menu. You can close this window."
