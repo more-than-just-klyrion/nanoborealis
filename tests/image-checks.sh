@@ -39,6 +39,22 @@ expect "pool node service template" grep -q '^Image=ghcr.io/more-than-just-kyrio
     /usr/share/nanoborealis/exo.container
 expect "pool relay service installed" test -f /usr/lib/systemd/system/nanoborealis-pool-relay.service
 
+# The agent's and the pool node's service files must turn into services with this image's own
+# Podman: setup stops with "Quadlet did not generate nanobot.service" otherwise.
+quadlet="$(ls /usr/libexec/podman/quadlet /usr/lib/systemd/user-generators/podman-user-generator 2>/dev/null | head -n 1)"
+units="$(mktemp -d)"
+cp /usr/share/nanoborealis/nanobot.container "$units/"
+sed 's|^Exec=@EXEC_ARGS@$||' /usr/share/nanoborealis/exo.container > "$units/exo.container"
+generated="$(QUADLET_UNIT_DIRS="$units" "$quadlet" -dryrun -user 2>&1)"
+if grep -q '^ExecStart=.*podman run' <<<"$generated" && grep -q -- '---nanobot.service---' <<<"$generated" \
+    && grep -q -- '---exo.service---' <<<"$generated"; then
+    pass "Quadlet turns the agent and pool service files into services ($(podman --version))"
+else
+    flunk "Quadlet rejects a service file ($(podman --version)):"
+    sed 's/^/     /' <<<"$generated" | grep -v '^     \[' | head -25
+fi
+rm -rf "$units"
+
 # Services and update policy.
 expect "network guard enabled" systemctl is-enabled nanoborealis-firewall.service
 expect "migration enabled" systemctl is-enabled nanoborealis-migrate.service
