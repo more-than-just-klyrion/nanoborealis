@@ -54,7 +54,8 @@ jobs:
           echo "--- pixmaps"; ls -la "$root/usr/share/anaconda/pixmaps" 2>/dev/null
           echo "--- anaconda css"; ls "$root/usr/share/anaconda/"*.css 2>/dev/null; head -60 "$root/usr/share/anaconda/anaconda-gtk.css" 2>/dev/null
           echo "--- web ui?"; ls "$root/usr/share/cockpit" 2>/dev/null | head; ls "$root/usr/share/anaconda/" | head -40
-          echo "--- product config"; ls "$root/etc/anaconda/profile.d" "$root/etc/anaconda/product.d" 2>/dev/null
+          echo "--- product config"; ls "$root/etc/anaconda/profile.d" 2>/dev/null || true
+          echo "--- artwork sizes"; file "$root"/usr/share/anaconda/pixmaps/*.png; cat "$root/usr/share/anaconda/pixmaps/fedora.css"
           mkdir -p look && cp -r "$root/usr/share/anaconda/pixmaps" look/ 2>/dev/null || true
           cp "$root/usr/share/anaconda/"*.css look/ 2>/dev/null || true
           cp "$root/.buildstamp" look/buildstamp.txt 2>/dev/null || true
