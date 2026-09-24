@@ -1,0 +1,140 @@
+---
+name: Release the app
+
+# Freezes the NanoBorealis app with PyInstaller (through `flet pack`, which bundles Flet's own
+# runtime so nothing downloads on first launch) on each platform, checks that the frozen app
+# really runs, packages it, and publishes one release: a Windows installer, a macOS disk
+# image and a Linux archive with an install script.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "App version, e.g. 0.2.0"
+        required: true
+  push:
+    tags:
+      - 'client-v*'
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version || github.ref_name }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Version
+        run: echo "VERSION=${VERSION#client-v}" >> "$GITHUB_ENV"
+
+      - name: Linux libraries for Flet's window
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q libgtk-3-0 libmpv2 xvfb
+
+      - name: Freeze with PyInstaller
+        working-directory: client/src
+        run: |
+          python -m pip install --quiet "flet[desktop]==1.0.1" "flet-cli==1.0.1" "websockets>=13" "zeroconf>=0.130" pyinstaller pillow
+          sep=":"; icon=assets/icon.png
+          if [ "$RUNNER_OS" = Windows ]; then sep=";"; icon=assets/icon.ico; fi
+          flet pack main.py --yes --onedir --name NanoBorealis --icon "$icon" \
+            --add-data "assets${sep}assets" \
+            --product-name NanoBorealis --product-version "$VERSION" --file-version "$VERSION" \
+            --file-description "NanoBorealis" --company-name "NanoBorealis contributors" \
+            --copyright "Apache-2.0" --bundle-id io.github.more-than-just-klyrion.nanoborealis \
+            --distpath ../dist
+          ls ../dist
+
+      # The frozen app must reach the stick writer, which is how it writes install sticks with
+      # administrator rights. A missing setup file makes it report an error without a window.
+      - name: The frozen app runs
+        working-directory: client
+        run: |
+          case "$RUNNER_OS" in
+            Windows) app=dist/NanoBorealis/NanoBorealis.exe ;;
+            macOS)   app=dist/NanoBorealis.app/Contents/MacOS/NanoBorealis ;;
+            *)       app=dist/NanoBorealis/NanoBorealis ;;
+          esac
+          progress="$RUNNER_TEMP/progress.json"
+          "$app" write --disk 0 --serial none --source latest --setup-file "$RUNNER_TEMP/missing.json" --progress "$progress" || true
+          for i in $(seq 1 30); do [ -f "$progress" ] && break; sleep 1; done
+          cat "$progress"
+          grep -q '"phase": "error"' "$progress"
+
+      - name: Package (Windows installer)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Qp "/DAppVersion=$env:VERSION" "/DSourceDir=$PWD\client\dist\NanoBorealis" client\packaging\windows.iss
+          New-Item -ItemType Directory -Force out | Out-Null
+          Move-Item client\packaging\Output\*.exe out\
+
+      - name: Package (macOS disk image)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p out dmg
+          cp -R client/dist/NanoBorealis.app dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname NanoBorealis -srcfolder dmg -ov -format UDZO "out/NanoBorealis-$VERSION-macos.dmg"
+
+      - name: Package (Linux archive)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p out "stage/NanoBorealis-$VERSION"
+          cp -a client/dist/NanoBorealis "stage/NanoBorealis-$VERSION/"
+          cp client/packaging/install-linux.sh "stage/NanoBorealis-$VERSION/install.sh"
+          cp client/src/assets/icon.png "stage/NanoBorealis-$VERSION/"
+          chmod +x "stage/NanoBorealis-$VERSION/install.sh"
+          tar -C stage -czf "out/NanoBorealis-$VERSION-linux-x86_64.tar.gz" "NanoBorealis-$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ runner.os }}
+          path: out/*
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${VERSION#client-v}"
+          ls -la out
+          (cd out && sha256sum * > SHA256SUMS)
+          cat > notes.md <<EOF
+          The NanoBorealis app: chat with your agent from any computer, share this computer's hardware with it, and make install sticks. No Python needed.
+
+          | Platform | Download | Install |
+          |---|---|---|
+          | Windows 10/11 | \`NanoBorealis-Setup-$v.exe\` | Run it. It installs for your user, with Start menu and desktop shortcuts. |
+          | macOS | \`NanoBorealis-$v-macos.dmg\` | Open it and drag NanoBorealis to Applications. The app isn't notarized yet: the first time, right-click it and choose Open. |
+          | Linux (x86-64) | \`NanoBorealis-$v-linux-x86_64.tar.gz\` | Unpack it and run \`./install.sh\`. Needs GTK 3 (on every desktop Linux). |
+
+          Making install sticks works on Windows and Linux. \`SHA256SUMS\` lists the checksums.
+          EOF
+          gh release create "client-v$v" out/* --repo "$GITHUB_REPOSITORY" --title "NanoBorealis app $v" --notes-file notes.md --latest=false

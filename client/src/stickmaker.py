@@ -353,16 +353,21 @@ def launch_elevated(disk: Disk, source: str, setup: dict | None, progress_file: 
         json.dump(setup or {}, handoff)
     args = ["write", "--disk", disk.id, "--serial", disk.serial, "--source", source,
             "--setup-file", setup_file, "--progress", progress_file]
-    script = str(Path(__file__).resolve())
+    # A frozen (PyInstaller) app has no script to hand Python: it runs its own executable with
+    # `write ...`, which the app's entry point sends here instead of opening a window.
+    frozen = getattr(sys, "frozen", False)
+    script = [] if frozen else [str(Path(__file__).resolve())]
     if sys.platform == "win32":
-        python = sys.executable.replace("python.exe", "pythonw.exe") if sys.executable.endswith("python.exe") else sys.executable
-        params = subprocess.list2cmdline([script, *args])
+        python = sys.executable
+        if not frozen and python.endswith("python.exe"):
+            python = python.replace("python.exe", "pythonw.exe")
+        params = subprocess.list2cmdline([*script, *args])
         result = ctypes.windll.shell32.ShellExecuteW(None, "runas", python, params, None, 0)
         if result <= 32:
             os.remove(setup_file)
             raise StickError("Windows didn't start the writer; the permission prompt may have been declined")
     else:
-        subprocess.Popen(["pkexec", sys.executable, script, *args])
+        subprocess.Popen(["pkexec", sys.executable, *script, *args])
     return setup_file
 
 

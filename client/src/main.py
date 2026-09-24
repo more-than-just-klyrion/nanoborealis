@@ -1356,6 +1356,9 @@ async def main(page: ft.Page) -> None:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "write":
+        # The packaged app relaunching itself, elevated, to write an install stick.
+        sys.exit(stickmaker._cli(sys.argv[1:]))
     # Under pythonw (no console) these are None, and Flet writes download progress to them.
     if sys.stdout is None:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
