@@ -31,6 +31,9 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; An update closes the running app first (the app starts the installer, then quits).
+CloseApplications=yes
+RestartApplications=no
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"
@@ -44,3 +47,5 @@ Name: "{userdesktop}\NanoBorealis"; Filename: "{app}\NanoBorealis.exe"; Tasks: d
 
 [Run]
 Filename: "{app}\NanoBorealis.exe"; Description: "Open NanoBorealis"; Flags: nowait postinstall skipifsilent
+; A silent install is the app updating itself: reopen it afterwards.
+Filename: "{app}\NanoBorealis.exe"; Flags: nowait runasoriginaluser; Check: WizardSilent

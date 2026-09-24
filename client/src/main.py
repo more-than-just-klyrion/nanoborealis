@@ -24,7 +24,9 @@ import flet as ft
 import compute
 import discovery
 import stickmaker
+import updater
 from agent_link import AgentLink, AuthError, LinkError
+from version import VERSION
 
 NARROW = 760  # below this width the chat list moves into a drawer
 READABLE = 860  # widest the conversation column gets
@@ -36,6 +38,7 @@ PREF_ADDRESS = "nanoborealis.address"
 PREF_PASSWORD = "nanoborealis.password"
 PREF_CLIENT_ID = "nanoborealis.client_id"
 PREF_COMPUTE = "nanoborealis.compute"  # JSON: consent, token, served model, speeds
+PREF_AUTO_UPDATE = "nanoborealis.auto_update"  # "1": install new app versions without asking
 SUGGESTIONS = [
     ("Plan a project", "Help me plan a small Python project. Ask me what it should do first."),
     ("Look at my projects", "Look through ~/projects and tell me what is there."),
@@ -207,8 +210,103 @@ class NanoBorealisApp:
             self.address_field.value = self.address
             self.password_field.value = password
             self.page.update()
+        self.page.run_task(self.check_for_update)
         if self.address and password:
             await self.connect(self.address, password, remember=True)
+
+    # -- App updates -------------------------------------------------------------
+
+    async def check_for_update(self, quiet: bool = True) -> None:
+        """Offer a newer app release, or install it straight away when auto-update is on."""
+        if not updater.can_update():
+            if not quiet:
+                self.show_update_dialog(None, note="This copy runs from source; update it with git pull.")
+            return
+        try:
+            update = await asyncio.to_thread(updater.check)
+        except Exception as e:  # offline, rate-limited: try again next start
+            if not quiet:
+                self.show_update_dialog(None, note=f"Couldn't check for updates: {e}")
+            return
+        if update is None:
+            if not quiet:
+                self.show_update_dialog(None)
+            return
+        if await self.pref_get(PREF_AUTO_UPDATE) == "1":
+            await self.apply_update(update)
+        else:
+            self.show_update_dialog(update)
+
+    def show_update_dialog(self, update: updater.Update | None, note: str = "") -> None:
+        async def toggle(e) -> None:
+            await self.pref_set(PREF_AUTO_UPDATE, "1" if e.control.value else "0")
+
+        auto = ft.Switch(label="Install new versions automatically", value=False, on_change=toggle)
+
+        async def load_switch() -> None:
+            auto.value = await self.pref_get(PREF_AUTO_UPDATE) == "1"
+            self.page.update()
+
+        if update is None:
+            body = note or f"NanoBorealis {VERSION} is the newest version."
+            actions = [ft.TextButton("Close", on_click=lambda _: self.page.pop_dialog())]
+        else:
+            body = f"NanoBorealis {update.version} is available. You have {VERSION}."
+            actions = [ft.TextButton("Later", on_click=lambda _: self.page.pop_dialog()),
+                       ft.FilledButton("Update", icon=ft.Icons.DOWNLOAD_ROUNDED, on_click=on(self.apply_update, update))]
+        controls = [ft.Text(body, size=14)]
+        if update is not None and update.notes_url:
+            controls.append(ft.TextButton("What's new", icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
+                                          on_click=lambda _: self.page.run_task(self.url_launcher.launch_url, update.notes_url)))
+        if updater.can_update():
+            controls.append(auto)
+            controls.append(ft.Text("Updates come from this project's GitHub releases and are checked against "
+                                    "their published checksums before they install.",
+                                    size=12, color=ft.Colors.ON_SURFACE_VARIANT))
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True, scrollable=True,
+            title=ft.Text("App updates", size=18, weight=ft.FontWeight.W_600),
+            content=ft.Container(ft.Column(controls, tight=True, spacing=10), width=440),
+            actions=actions,
+        ))
+        self.page.run_task(load_switch)
+
+    async def apply_update(self, update: updater.Update) -> None:
+        bar = ft.ProgressBar(value=0, width=400)
+        status = ft.Text(f"Downloading NanoBorealis {update.version}...", size=13)
+        try:
+            self.page.pop_dialog()
+        except Exception:
+            pass
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True, title=ft.Text("Updating", size=18, weight=ft.FontWeight.W_600),
+            content=ft.Container(ft.Column([status, bar], tight=True, spacing=12), width=440),
+        ))
+        progress = [0, update.size]
+
+        def report(done: int, total: int) -> None:
+            progress[0], progress[1] = done, total or progress[1]
+
+        task = asyncio.ensure_future(asyncio.to_thread(updater.download, update, report))
+        while not task.done():
+            bar.value = progress[0] / progress[1] if progress[1] else None
+            self.page.update()
+            await asyncio.sleep(0.4)
+        try:
+            path = task.result()
+        except Exception as e:
+            status.value = f"The update didn't install: {e}"
+            bar.visible = False
+            self.page.update()
+            return
+        status.value = "Installing. NanoBorealis restarts by itself." if sys.platform != "darwin" \
+            else "Drag NanoBorealis to Applications in the window that opens, then reopen it."
+        bar.value = None
+        self.page.update()
+        updater.install(path)
+        if sys.platform != "darwin":
+            await asyncio.sleep(1.5)
+            os._exit(0)  # the installer replaces these files and reopens the app
 
     async def pref_get(self, key: str) -> str:
         try:
@@ -489,8 +587,20 @@ class NanoBorealisApp:
                 ], spacing=10),
             ),
         )
+        updates = ft.Container(
+            padding=ft.Padding.symmetric(horizontal=8),
+            content=ft.Container(
+                border_radius=10, ink=True, padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                on_click=lambda _: self.page.run_task(self.check_for_update, False),
+                content=ft.Row([
+                    ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED, size=18, color=ft.Colors.ON_SURFACE_VARIANT),
+                    ft.Text(f"App updates ({VERSION})", size=13, expand=True),
+                ], spacing=10),
+            ),
+        )
         return ft.Column(expand=True, spacing=6,
-                         controls=[*top, *([chat_list] if chat_list else []), ft.Divider(height=1), share, stick, bottom])
+                         controls=[*top, *([chat_list] if chat_list else []), ft.Divider(height=1), share, stick,
+                                   updates, bottom])
 
     def welcome_view(self) -> ft.Control:
         chips = [
