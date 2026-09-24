@@ -4,10 +4,23 @@ contents = """
 bootc switch --mutate-in-place --transport registry ghcr.io/more-than-just-klyrion/nanoborealis:stable
 %end
 
-%post --nochroot --log=/tmp/nanoborealis-setup.log
-# Keys and settings the NanoBorealis Installer wrote past the image on the stick, if any.
+%post --log=/var/log/nanoborealis-setup.log
+# Keys and settings the NanoBorealis app wrote past the image on the stick, if any. This runs
+# inside the installed system, so the data lands in its real /var, and the log stays there.
+if [ -x /usr/libexec/nanoborealis-setup-from-stick ]; then
+    /usr/libexec/nanoborealis-setup-from-stick || echo "no setup data on any disk here"
+else
+    echo "this image has no nanoborealis-setup-from-stick"
+fi
+%end
+
+%post --nochroot --log=/mnt/sysimage/var/log/nanoborealis-setup-nochroot.log
+# A second try from the installer's side, in case the installed system couldn't see the stick.
 root="${ANACONDA_ROOT_PATH:-/mnt/sysimage}"
-/usr/bin/python3 "$root/usr/libexec/nanoborealis-setup-from-stick" --root "$root" || true
+if [ ! -f "$root/var/lib/nanoborealis/setup.json" ]; then
+    reader="$(ls "$root"/usr/libexec/nanoborealis-setup-from-stick "$root"/ostree/deploy/*/deploy/*/usr/libexec/nanoborealis-setup-from-stick 2>/dev/null | head -n 1)"
+    [ -n "$reader" ] && /usr/bin/python3 "$reader" --root "$root" || echo "no setup data found from the installer side"
+fi
 %end
 """
 
