@@ -51,9 +51,10 @@ jobs:
         working-directory: client/src
         run: |
           python -m pip install --quiet "flet[desktop]==1.0.1" "flet-cli==1.0.1" "websockets>=13" "zeroconf>=0.130" pyinstaller pillow
-          sep=":"; icon=assets/icon.png
+          sep=":"; icon=assets/icon.png; layout=--onedir
           if [ "$RUNNER_OS" = Windows ]; then sep=";"; icon=assets/icon.ico; fi
-          flet pack main.py --yes --onedir --name NanoBorealis --icon "$icon" \
+          if [ "$RUNNER_OS" = macOS ]; then layout=""; fi  # an .app is a folder already
+          flet pack main.py --yes $layout --name NanoBorealis --icon "$icon" \
             --add-data "assets${sep}assets" \
             --product-name NanoBorealis --product-version "$VERSION" --file-version "$VERSION" \
             --file-description "NanoBorealis" --company-name "NanoBorealis contributors" \
