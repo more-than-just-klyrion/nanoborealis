@@ -57,6 +57,8 @@ You need Ollama installed; the client links to it if it's missing. **Stop sharin
 - **macOS:** open `NanoBorealis-…-macos.dmg` and drag NanoBorealis to Applications. It isn't notarized yet, so the first time, right-click it and choose **Open**.
 - **Linux:** unpack `NanoBorealis-…-linux-x86_64.tar.gz` and run `./install.sh` (`./install.sh --remove` uninstalls).
 
+**Updates:** the app checks for a newer version each time it starts, and offers it; **App updates** in the sidebar checks on demand. Turn on **Install new versions automatically** there to skip the question. Either way, a download only installs after it matches the checksums published with the release. On Windows and Linux the app then restarts by itself; on macOS, drag the new app over the old one.
+
 **From source:** on Windows double-click `run-windows.cmd`, on Linux and macOS run `./run.sh`. Both need Python 3.10 or newer, and set up a private environment on first run. Releases are frozen with PyInstaller by [`.github/workflows/client-release.yml`](../.github/workflows/client-release.yml).
 
 **Phones:** build an app with Flet. It installs Flutter the first time, so this takes a while:
