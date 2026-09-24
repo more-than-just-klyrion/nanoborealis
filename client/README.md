@@ -51,9 +51,13 @@ You need Ollama installed; the client links to it if it's missing. **Stop sharin
 
 ## Run it
 
-**Windows:** double-click `run-windows.cmd`. You need [Python 3.10 or newer](https://www.python.org/downloads/). The first run sets up a private Python environment and downloads the window runtime, which takes a minute.
+**Install it:** download it from the [latest release](https://github.com/more-than-just-klyrion/nanoborealis/releases/latest). No Python needed.
 
-**Linux and macOS:** run `./run.sh`. It needs Python 3.10 or newer with the `venv` module.
+- **Windows:** run `NanoBorealis-Setup-….exe`. It installs for your user, with Start menu and desktop shortcuts, and uninstalls from Settings → Apps.
+- **macOS:** open `NanoBorealis-…-macos.dmg` and drag NanoBorealis to Applications. It isn't notarized yet, so the first time, right-click it and choose **Open**.
+- **Linux:** unpack `NanoBorealis-…-linux-x86_64.tar.gz` and run `./install.sh` (`./install.sh --remove` uninstalls).
+
+**From source:** on Windows double-click `run-windows.cmd`, on Linux and macOS run `./run.sh`. Both need Python 3.10 or newer, and set up a private environment on first run. Releases are frozen with PyInstaller by [`.github/workflows/client-release.yml`](../.github/workflows/client-release.yml).
 
 **Phones:** build an app with Flet. It installs Flutter the first time, so this takes a while:
 

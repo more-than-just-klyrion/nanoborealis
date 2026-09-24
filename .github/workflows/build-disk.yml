@@ -158,8 +158,28 @@ jobs:
             echo
             echo "Updates are opt-in: run \`nanoborealis update\` whenever you want the newest build."
           } > notes.md
+          # The desktop app goes out with every installer, so the Latest release has everything.
+          # Releases here are immutable, so it has to be in this one from the start.
+          app_tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName --jq '[.[] | select(.tagName | startswith("client-v"))][0].tagName // ""')"
+          app_files=()
+          if [ -n "$app_tag" ]; then
+            gh release download "$app_tag" --repo "$GITHUB_REPOSITORY" --dir app \
+              --pattern '*.exe' --pattern '*.dmg' --pattern '*linux*.tar.gz'
+            app_files=( app/* )
+            app_version="${app_tag#client-v}"
+            {
+              echo
+              echo "## The NanoBorealis app ($app_version)"
+              echo
+              echo "Chat with your agent from any computer, lend it this computer's hardware, and make install sticks, which download this installer onto a USB stick for you, with your key."
+              echo
+              echo "- **Windows:** \`NanoBorealis-Setup-$app_version.exe\`"
+              echo "- **macOS:** \`NanoBorealis-$app_version-macos.dmg\` (right-click the app and choose Open the first time)"
+              echo "- **Linux:** \`NanoBorealis-$app_version-linux-x86_64.tar.gz\`, then run \`./install.sh\`"
+            } >> notes.md
+          fi
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "NanoBorealis ${day}" --notes-file notes.md \
-            "${parts[@]}" "$name.sha256" SHA256SUMS-parts
+            "${parts[@]}" "$name.sha256" SHA256SUMS-parts "${app_files[@]}"
 
       - name: Upload to S3
         if: inputs.upload-to-s3 == true && github.event_name != 'pull_request'

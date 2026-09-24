@@ -27,7 +27,13 @@ It's built on [Aurora](https://getaurora.dev), a polished KDE Plasma desktop on 
 
 ### The easy way: the NanoBorealis app
 
-The [NanoBorealis app](client/) makes the install stick for you: pick a USB stick, paste your OpenRouter key, and it downloads the installer straight onto the stick and checks it. On Windows, download this repository and double-click `client\run-windows.cmd` (it needs [Python 3.10+](https://www.python.org/downloads/)). Then:
+**[Download the NanoBorealis app](../../releases/latest)** from the latest release:
+
+| Windows | macOS | Linux |
+|---|---|---|
+| `NanoBorealis-Setup-….exe`: run it | `NanoBorealis-…-macos.dmg`: drag to Applications | `NanoBorealis-…-linux-x86_64.tar.gz`: unpack, run `./install.sh` |
+
+The app makes the install stick for you: pick a USB stick, paste your OpenRouter key, and it downloads the installer straight onto the stick and checks it. Then:
 
 1. Boot the new computer from the stick. Its boot menu opens with **F9** on HP, **F12** on Dell and Lenovo, or **Option** on a Mac.
 2. Install, and tick **Make this user administrator**.
