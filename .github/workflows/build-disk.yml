@@ -173,7 +173,10 @@ jobs:
           } > notes.md
           # The desktop app goes out with every installer, so the Latest release has everything.
           # Releases here are immutable, so it has to be in this one from the start.
-          app_tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName --jq '[.[] | select(.tagName | startswith("client-v"))][0].tagName // ""')"
+          # Only a stable app version ships with the installer, never a testing or dev build.
+          app_tag="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-pre-releases --limit 100 --json tagName \
+            --jq '[.[].tagName | select(test("^client-v[0-9]+\\.[0-9]+\\.[0-9]+$"))]
+                  | sort_by(ltrimstr("client-v") | split(".") | map(tonumber)) | last // ""')"
           app_files=()
           if [ -n "$app_tag" ]; then
             gh release download "$app_tag" --repo "$GITHUB_REPOSITORY" --dir app \

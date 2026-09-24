@@ -39,6 +39,12 @@ PREF_PASSWORD = "nanoborealis.password"
 PREF_CLIENT_ID = "nanoborealis.client_id"
 PREF_COMPUTE = "nanoborealis.compute"  # JSON: consent, token, served model, speeds
 PREF_AUTO_UPDATE = "nanoborealis.auto_update"  # "1": install new app versions without asking
+PREF_UPDATE_CHANNEL = "nanoborealis.update_channel"  # stable, testing or dev
+CHANNEL_NAMES = {
+    "stable": ("Stable", "Tested releases. Recommended."),
+    "testing": ("Testing", "Candidates for the next stable version, a few days early."),
+    "dev": ("Development", "Built from every change. Newest features, occasionally broken."),
+}
 SUGGESTIONS = [
     ("Plan a project", "Help me plan a small Python project. Ask me what it should do first."),
     ("Look at my projects", "Look through ~/projects and tell me what is there."),
@@ -216,28 +222,34 @@ class NanoBorealisApp:
 
     # -- App updates -------------------------------------------------------------
 
+    async def update_channel(self) -> str:
+        """The owner's choice, or else the channel this build came from."""
+        chosen = await self.pref_get(PREF_UPDATE_CHANNEL)
+        return chosen if chosen in updater.CHANNELS else updater.channel_of(VERSION)
+
     async def check_for_update(self, quiet: bool = True) -> None:
         """Offer a newer app release, or install it straight away when auto-update is on."""
         if not updater.can_update():
             if not quiet:
-                self.show_update_dialog(None, note="This copy runs from source; update it with git pull.")
+                self.show_update_dialog(None, "stable", note="This copy runs from source; update it with git pull.")
             return
+        channel = await self.update_channel()
         try:
-            update = await asyncio.to_thread(updater.check)
+            update = await asyncio.to_thread(updater.check, channel)
         except Exception as e:  # offline, rate-limited: try again next start
             if not quiet:
-                self.show_update_dialog(None, note=f"Couldn't check for updates: {e}")
+                self.show_update_dialog(None, channel, note=f"Couldn't check for updates: {e}")
             return
         if update is None:
             if not quiet:
-                self.show_update_dialog(None)
+                self.show_update_dialog(None, channel)
             return
         if await self.pref_get(PREF_AUTO_UPDATE) == "1":
             await self.apply_update(update)
         else:
-            self.show_update_dialog(update)
+            self.show_update_dialog(update, channel)
 
-    def show_update_dialog(self, update: updater.Update | None, note: str = "") -> None:
+    def show_update_dialog(self, update: updater.Update | None, channel: str, note: str = "") -> None:
         async def toggle(e) -> None:
             await self.pref_set(PREF_AUTO_UPDATE, "1" if e.control.value else "0")
 
@@ -247,8 +259,23 @@ class NanoBorealisApp:
             auto.value = await self.pref_get(PREF_AUTO_UPDATE) == "1"
             self.page.update()
 
+        async def switch_channel(e) -> None:
+            if e.control.value and e.control.value != channel:
+                await self.pref_set(PREF_UPDATE_CHANNEL, e.control.value)
+                self.page.pop_dialog()
+                await self.check_for_update(quiet=False)  # look again on the new channel
+
+        picker = ft.Dropdown(
+            label="Update channel", value=channel, dense=True, on_select=switch_channel,
+            options=[ft.DropdownOption(key=key, text=f"{name}: {about}") for key, (name, about) in CHANNEL_NAMES.items()],
+        )
+
         if update is None:
-            body = note or f"NanoBorealis {VERSION} is the newest version."
+            body = note or f"NanoBorealis {VERSION} is the newest version on the {CHANNEL_NAMES[channel][0]} channel."
+            steadiness = {"dev": 0, "testing": 1, "stable": 2}
+            if not note and steadiness[updater.channel_of(VERSION)] < steadiness[channel]:
+                # e.g. running a dev build with Stable chosen: nothing gets downgraded
+                body += " You're running a newer build than it has, so you'll move over with its next release."
             actions = [ft.TextButton("Close", on_click=lambda _: self.page.pop_dialog())]
         else:
             body = f"NanoBorealis {update.version} is available. You have {VERSION}."
@@ -259,6 +286,7 @@ class NanoBorealisApp:
             controls.append(ft.TextButton("What's new", icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
                                           on_click=lambda _: self.page.run_task(self.url_launcher.launch_url, update.notes_url)))
         if updater.can_update():
+            controls.append(picker)
             controls.append(auto)
             controls.append(ft.Text("Updates come from this project's GitHub releases and are checked against "
                                     "their published checksums before they install.",

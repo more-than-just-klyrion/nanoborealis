@@ -3,45 +3,109 @@ name: Release the app
 
 # Freezes the NanoBorealis app with PyInstaller (through `flet pack`, which bundles Flet's own
 # runtime so nothing downloads on first launch) on each platform, checks that the frozen app
-# really runs, packages it, and publishes one release: a Windows installer, a macOS disk
-# image and a Linux archive with an install script.
+# really runs, packages it, and publishes a release: a Windows installer, a macOS disk image and
+# a Linux archive with an install script. Three channels, as the app's updater sees them:
+#
+#   dev      every push that changes the app, automatically: X.Y.Z-dev.N pre-releases
+#   testing  by hand: X.Y.Z-rc.N pre-releases, candidates for the next stable version
+#   stable   by hand: X.Y.Z releases, what everyone gets by default
+#
+# None of them is marked Latest: that stays the OS installer, which install sticks follow.
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'client/**'
+      - '.github/workflows/client-release.yml'
   workflow_dispatch:
     inputs:
+      channel:
+        description: "Channel"
+        type: choice
+        options: [testing, stable, dev]
+        default: testing
       version:
-        description: "App version, e.g. 0.2.0"
-        required: true
-  push:
-    tags:
-      - 'client-v*'
+        description: "Version for testing or stable, e.g. 0.3.0 (dev builds number themselves)"
+        required: false
+      ref:
+        description: "Commit or tag to build, e.g. the commit of a testing build you're promoting (default: main)"
+        required: false
 
 permissions:
   contents: write
 
-env:
-  VERSION: ${{ inputs.version || github.ref_name }}
+concurrency:
+  group: client-release-${{ inputs.channel || 'dev' }}
+  cancel-in-progress: ${{ (inputs.channel || 'dev') == 'dev' }}  # a newer dev build replaces an older one
 
 jobs:
+  plan:
+    name: Plan the release
+    runs-on: ubuntu-24.04
+    outputs:
+      channel: ${{ steps.plan.outputs.channel }}
+      version: ${{ steps.plan.outputs.version }}
+      numeric: ${{ steps.plan.outputs.numeric }}
+      ref: ${{ steps.plan.outputs.ref }}
+    steps:
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel || 'dev' }}
+          VERSION_IN: ${{ inputs.version }}
+          REF_IN: ${{ inputs.ref }}
+        run: |
+          # The newest stable version: dev builds count towards the one after it.
+          stable="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-pre-releases --limit 100 --json tagName \
+            --jq '[.[].tagName | select(test("^client-v[0-9]+\\.[0-9]+\\.[0-9]+$")) | ltrimstr("client-v")]
+                  | sort_by(split(".") | map(tonumber)) | last // "0.0.0"')"
+          case "$CHANNEL" in
+            dev)
+              IFS=. read -r major minor patch <<<"$stable"
+              base="$major.$minor.$((patch + 1))"
+              version="$base-dev.$GITHUB_RUN_NUMBER" ;;
+            testing|stable)
+              [[ "$VERSION_IN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Give a version like 0.3.0"; exit 1; }
+              base="$VERSION_IN"
+              version="$base"
+              [ "$CHANNEL" = testing ] && version="$base-rc.$GITHUB_RUN_NUMBER" ;;
+            *) echo "::error::Unknown channel $CHANNEL"; exit 1 ;;
+          esac
+          if gh release view "client-v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::client-v$version is already released"; exit 1
+          fi
+          # Windows' file-version field takes numbers only.
+          numeric="$base.$([ "$CHANNEL" = stable ] && echo 0 || echo "$GITHUB_RUN_NUMBER")"
+          # A short commit or a tag works too: the release needs the full commit it was built from.
+          ref="$(gh api "repos/$GITHUB_REPOSITORY/commits/${REF_IN:-$GITHUB_SHA}" --jq .sha)" \
+            || { echo "::error::There's no commit or tag called ${REF_IN}"; exit 1; }
+          echo "Releasing $version on the $CHANNEL channel from $ref (newest stable: $stable)"
+          { echo "channel=$CHANNEL"; echo "version=$version"; echo "numeric=$numeric"; echo "ref=$ref"; } >> "$GITHUB_OUTPUT"
+
   build:
     name: Build (${{ matrix.os }})
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      NUMERIC: ${{ needs.plan.outputs.numeric }}
     defaults:
       run:
         shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Version
-        run: echo "VERSION=${VERSION#client-v}" >> "$GITHUB_ENV"
 
       - name: Linux libraries for Flet's window
         if: runner.os == 'Linux'
@@ -57,8 +121,8 @@ jobs:
           if [ "$RUNNER_OS" = macOS ]; then layout=""; fi  # an .app is a folder already
           flet pack main.py --yes $layout --name NanoBorealis --icon "$icon" \
             --add-data "assets${sep}assets" \
-            --product-name NanoBorealis --product-version "$VERSION" --file-version "$VERSION" \
-            --file-description "NanoBorealis" --company-name "NanoBorealis contributors" \
+            --product-name NanoBorealis --product-version "$NUMERIC" --file-version "$NUMERIC" \
+            --file-description "NanoBorealis $VERSION" --company-name "NanoBorealis contributors" \
             --copyright "Apache-2.0" --bundle-id io.github.more-than-just-kyrion.nanoborealis \
             --distpath ../dist
           ls ../dist
@@ -114,22 +178,33 @@ jobs:
 
   release:
     name: Publish the release
-    needs: build
+    needs: [plan, build]
     runs-on: ubuntu-24.04
+    env:
+      CHANNEL: ${{ needs.plan.outputs.channel }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      REF: ${{ needs.plan.outputs.ref }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: out
           merge-multiple: true
       - name: Release
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          v="${VERSION#client-v}"
+          v="$VERSION"
           ls -la out
           (cd out && sha256sum * > SHA256SUMS)
+          case "$CHANNEL" in
+            stable)  title="NanoBorealis app $v"; pre=""
+                     lead="The NanoBorealis app: chat with your agent from any computer, share this computer's hardware with it, and make install sticks. No Python needed." ;;
+            testing) title="NanoBorealis app $v (testing)"; pre="--prerelease"
+                     lead="**Testing build**: a candidate for the next stable version. Apps on the Testing or Development channel get it; Stable doesn't." ;;
+            dev)     title="NanoBorealis app $v (dev build)"; pre="--prerelease"
+                     lead="**Development build** from ${REF:0:7}: newest changes, not yet tested. Only apps on the Development channel get it." ;;
+          esac
           cat > notes.md <<EOF
-          The NanoBorealis app: chat with your agent from any computer, share this computer's hardware with it, and make install sticks. No Python needed.
+          $lead
 
           | Platform | Download | Install |
           |---|---|---|
@@ -137,6 +212,18 @@ jobs:
           | macOS | \`NanoBorealis-$v-macos.dmg\` | Open it and drag NanoBorealis to Applications. The app isn't notarized yet: the first time, right-click it and choose Open. |
           | Linux (x86-64) | \`NanoBorealis-$v-linux-x86_64.tar.gz\` | Unpack it and run \`./install.sh\`. Needs GTK 3 (on every desktop Linux). |
 
-          Making install sticks works on Windows and Linux. \`SHA256SUMS\` lists the checksums.
+          Making install sticks works on Windows and Linux. \`SHA256SUMS\` lists the checksums. The update channel is under **App updates** in the app.
           EOF
-          gh release create "client-v$v" out/* --repo "$GITHUB_REPOSITORY" --title "NanoBorealis app $v" --notes-file notes.md --latest=false
+          gh release create "client-v$v" out/* --repo "$GITHUB_REPOSITORY" --target "$REF" --title "$title" \
+            --notes-file notes.md --latest=false $pre
+
+      # Keep the releases page readable: only the five newest dev builds stay.
+      - name: Tidy old dev builds
+        if: needs.plan.outputs.channel == 'dev'
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | test("^client-v.*-dev\\.")))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' \
+          | while read -r old; do
+              gh release delete "$old" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag \
+                || echo "::warning::couldn't remove $old"
+            done

@@ -1,4 +1,12 @@
-"""Updates for the packaged app, from its GitHub releases (tags `client-vX.Y.Z`).
+"""Updates for the packaged app, from its GitHub releases, on one of three channels:
+
+    stable   client-vX.Y.Z          releases everyone gets
+    testing  client-vX.Y.Z-rc.N     candidates for the next stable version (pre-releases)
+    dev      client-vX.Y.Z-dev.N    built from every change to the app (pre-releases)
+
+A channel offers its own builds and every more stable one, so testing also gets stable
+releases, and dev gets everything. Versions order as semver does: 0.3.0-dev.9 < 0.3.0-rc.2 <
+0.3.0.
 
 Only the packaged app updates itself; running from source updates with git. An update is found,
 downloaded, checked against the release's SHA256SUMS, and only then installed:
@@ -27,7 +35,9 @@ from typing import Callable
 from version import VERSION
 
 REPO = "more-than-just-kyrion/nanoborealis"
-TAG = re.compile(r"^client-v(\d+)\.(\d+)\.(\d+)$")
+VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-(rc|dev)\.(\d+))?$")
+CHANNELS = {"stable": (None,), "testing": (None, "rc"), "dev": (None, "rc", "dev")}
+RANK = {"dev": 0, "rc": 1, None: 2}  # a release outranks its own candidates and dev builds
 
 
 class UpdateError(Exception):
@@ -44,9 +54,20 @@ class Update:
     sums_url: str
 
 
-def parse(version: str) -> tuple[int, ...] | None:
-    match = re.match(r"^(\d+)\.(\d+)\.(\d+)$", version)
-    return tuple(int(n) for n in match.groups()) if match else None
+def parse(version: str) -> tuple[int, int, int, int, int] | None:
+    """A sort key: major, minor, patch, then stable above rc above dev, then the build number."""
+    match = VERSION_RE.match(version)
+    if not match:
+        return None
+    major, minor, patch, kind, number = match.groups()
+    return int(major), int(minor), int(patch), RANK[kind], int(number or 0)
+
+
+def channel_of(version: str) -> str:
+    """The channel a build came from: the one it keeps following unless the owner changes it."""
+    match = VERSION_RE.match(version)
+    kind = match.group(4) if match else None
+    return {"rc": "testing", "dev": "dev"}.get(kind, "stable")
 
 
 def can_update() -> bool:
@@ -62,31 +83,42 @@ def asset_for_platform(version: str) -> str:
     return f"NanoBorealis-{version}-linux-x86_64.tar.gz"
 
 
-def check() -> Update | None:
-    """The newest app release, if it's newer than this app and has a file for this platform."""
+def newest(releases: list[dict], channel: str) -> tuple[str, dict] | None:
+    """The newest release a channel accepts, as (version, release)."""
+    kinds = CHANNELS.get(channel, CHANNELS["stable"])
+    best: tuple[tuple, str, dict] | None = None
+    for release in releases:
+        tag = release.get("tag_name", "")
+        if release.get("draft") or not tag.startswith("client-v"):
+            continue
+        version = tag[len("client-v"):]
+        match = VERSION_RE.match(version)
+        if not match or match.group(4) not in kinds:
+            continue
+        key = parse(version)
+        if best is None or key > best[0]:
+            best = (key, version, release)
+    return (best[1], best[2]) if best else None
+
+
+def check(channel: str = "stable") -> Update | None:
+    """The newest release on `channel`, if it's newer than this app and has a file for this platform."""
     current = parse(VERSION)
     if current is None:
         return None
-    request = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases?per_page=30",
+    request = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases?per_page=100",
                                      headers={"Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(request, timeout=20) as response:
         releases = json.loads(response.read())
-    best: tuple[tuple[int, ...], dict] | None = None
-    for release in releases:
-        match = TAG.match(release.get("tag_name", ""))
-        if not match or release.get("draft") or release.get("prerelease"):
-            continue
-        version = tuple(int(n) for n in match.groups())
-        if best is None or version > best[0]:
-            best = (version, release)
-    if best is None or best[0] <= current:
+    found = newest(releases, channel)
+    if found is None or parse(found[0]) <= current:
         return None
-    version = ".".join(map(str, best[0]))
-    assets = {a["name"]: a for a in best[1].get("assets", [])}
+    version, release = found
+    assets = {a["name"]: a for a in release.get("assets", [])}
     name = asset_for_platform(version)
     if name not in assets or "SHA256SUMS" not in assets:
         return None
-    return Update(version, best[1].get("html_url", ""), name, assets[name]["browser_download_url"],
+    return Update(version, release.get("html_url", ""), name, assets[name]["browser_download_url"],
                   int(assets[name].get("size") or 0), assets["SHA256SUMS"]["browser_download_url"])
 
 
