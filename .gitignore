@@ -7,3 +7,4 @@ _build-*/**
 
 # Fonts the branding scripts download
 branding/.cache/
+__pycache__/
