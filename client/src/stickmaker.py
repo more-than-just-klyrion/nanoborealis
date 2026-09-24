@@ -112,11 +112,26 @@ class Release:
     parts: list[str]  # download URLs, in order
 
 
-def latest_release() -> Release:
-    request = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
-                                     headers={"Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        data = json.loads(response.read())
+def latest_release(channel: str = "stable") -> Release:
+    """The newest installer for a build. Stable is the Latest release; testing and dev
+    installers are pre-releases tagged nanoborealis-<build>-... When a build has none yet, the
+    stable installer is returned, and the stick's setup data moves the computer at first login."""
+    data = None
+    if channel in ("testing", "dev"):
+        request = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases?per_page=50",
+                                         headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            releases = json.loads(response.read())
+        own = [r for r in releases if not r.get("draft")
+               and r.get("tag_name", "").startswith(f"nanoborealis-{channel}-")
+               and any(a["name"].endswith(".iso.sha256") for a in r.get("assets", []))]
+        if own:
+            data = max(own, key=lambda r: r.get("created_at", ""))
+    if data is None:
+        request = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
+                                         headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read())
     assets = {a["name"]: a for a in data.get("assets", [])}
     sums = [name for name in assets if name.endswith(".iso.sha256")]
     if not sums:
@@ -270,8 +285,10 @@ Progress = Callable[[str, int, int, str], None]  # phase, done bytes, total byte
 def write_stick(disk: Disk, source: str, setup: dict | None, progress: Progress) -> str:
     """Write the ISO and setup block, verify both, and return the ISO's SHA-256."""
     if source == "latest":
-        progress("prepare", 0, 0, "Finding the latest NanoBorealis release")
-        release = latest_release()
+        channel = (setup or {}).get("channel", "stable")
+        progress("prepare", 0, 0, "Finding the latest NanoBorealis installer" if channel == "stable"
+                 else f"Finding the latest NanoBorealis {channel} installer")
+        release = latest_release(channel)
         total, expected, chunks = release.size, release.sha256, _download(release.parts)
         what = f"{release.iso_name} from {release.tag}"
     else:

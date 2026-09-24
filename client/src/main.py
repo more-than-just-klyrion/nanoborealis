@@ -1344,8 +1344,9 @@ class NanoBorealisApp:
             pick,
             ft.Row([self.stick_key]),
             ft.Row([self.stick_channel]),
-            ft.Text("Testing and Development install from the stable installer, then move to that build at "
-                    "first login (one more download).", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text("Each build has its own installer. If one isn't published yet, the stick carries the stable "
+                    "installer and the new computer moves to your build at first login.",
+                    size=12, color=ft.Colors.ON_SURFACE_VARIANT),
             self.stick_source,
             ft.Row([ft.OutlinedButton("Choose ISO file", icon=ft.Icons.FOLDER_OPEN_ROUNDED, on_click=on(self.pick_iso)),
                     self.stick_iso_text], spacing=10),
@@ -1386,11 +1387,25 @@ class NanoBorealisApp:
         if len(setup) == 1:
             setup = None
         build = dict(STICK_BUILDS)[channel].split(":")[0]
+        details = [ft.Text(f"Build: {build}", size=13)]
+        if source == "latest":
+            self.set_stick_body([self.working("Finding the installer...")], [])
+            try:
+                release = await asyncio.to_thread(stickmaker.latest_release, channel)
+                details.append(ft.Text(f"Installer: {release.iso_name}", size=13, selectable=True))
+                if channel != "stable" and not release.tag.startswith(f"nanoborealis-{channel}-"):
+                    details.append(ft.Text(f"There's no {build} installer yet, so this is the stable one. The new "
+                                           f"computer moves to {build} at first login.",
+                                           size=12, color=ft.Colors.ON_SURFACE_VARIANT))
+            except Exception as e:
+                print(f"nanoborealis-client: finding the installer failed: {e}")
+        elif channel != "stable":
+            details.append(ft.Text(f"The new computer moves to {build} at first login.",
+                                   size=12, color=ft.Colors.ON_SURFACE_VARIANT))
         self.set_stick_body([
             ft.Row([ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.ERROR),
                     ft.Text(f"Erase {stick.label}? Everything on it will be lost.", size=14, expand=True)], spacing=10),
-            ft.Text(f"Build: {build}" + ("" if channel == "stable" else " (installs stable, then moves to it at first login)"),
-                    size=13),
+            *details,
             ft.Text("Windows will ask for permission to write the stick." if sys.platform == "win32"
                     else "Your system will ask for your password to write the stick.",
                     size=13, color=ft.Colors.ON_SURFACE_VARIANT),

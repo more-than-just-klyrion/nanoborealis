@@ -15,6 +15,15 @@ on:
         options:
           - amd64
           - arm64
+      channel:
+        description: "Build the installer carries (and the new computer follows)"
+        required: false
+        type: choice
+        options:
+          - stable
+          - testing
+          - dev
+        default: stable
   pull_request:
     branches:
       - main
@@ -26,11 +35,11 @@ on:
 env:
   IMAGE_NAME: ${{ github.event.repository.name }} # output of build.yml, keep in sync
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
-  DEFAULT_TAG: "stable"  # installer ISOs carry the stable channel
+  DEFAULT_TAG: ${{ inputs.channel || 'stable' }}  # the build the installer carries
   BIB_IMAGE: "quay.io/centos-bootc/bootc-image-builder:latest"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.channel || 'stable' }}
   cancel-in-progress: true
 
 jobs:
@@ -82,6 +91,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # The installed computer follows the same build the installer carries.
+      - name: Point the installer at its build
+        run: |
+          sed -i "s|/nanoborealis:stable$|/nanoborealis:${DEFAULT_TAG}|" disk_config/iso.toml
+          grep -n 'bootc switch' disk_config/iso.toml
+
       - name: Build disk images
         id: build
         uses: osbuild/bootc-image-builder-action@8661cd3832544ad68c12dcde8681b13ab0f56a8d # main
@@ -129,8 +144,16 @@ jobs:
           xorriso -indev "$iso.branded" -report_el_torito plain
           mv "$iso.branded" "$iso"
           day="$(date -u +%Y%m%d)"
-          tag="nanoborealis-${day}-$(date -u +%H%M)"
-          name="NanoBorealis-${day}-x86_64.iso"
+          channel="$DEFAULT_TAG"
+          if [ "$channel" = stable ]; then
+            tag="nanoborealis-${day}-$(date -u +%H%M)"; title="NanoBorealis ${day}"; name="NanoBorealis-${day}-x86_64.iso"
+            release_flags=()
+          else
+            # Testing and dev installers are pre-releases: Latest stays stable, which sticks follow.
+            tag="nanoborealis-${channel}-${day}-$(date -u +%H%M)"; title="NanoBorealis ${channel} ${day}"
+            name="NanoBorealis-${channel}-${day}-x86_64.iso"
+            release_flags=(--prerelease --latest=false)
+          fi
           mkdir -p release
           echo "$(sha256sum "$iso" | cut -d' ' -f1)  $name" > "release/$name.sha256"
           split -b 1900M -d -a 1 "$iso" "release/$name.part"
@@ -139,7 +162,11 @@ jobs:
           sha256sum "${parts[@]}" > SHA256SUMS-parts
           join_windows="copy /b $(printf '%s + ' "${parts[@]}" | sed 's/ + $//') $name"
           {
-            echo "NanoBorealis installer, built $(date -u +%Y-%m-%d) from \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}:stable\`."
+            if [ "$channel" != stable ]; then
+              echo "**${channel^} installer**: it installs the ${channel} build, and the computer keeps following it. For trying what's next, not for everyday computers."
+              echo
+            fi
+            echo "NanoBorealis installer, built $(date -u +%Y-%m-%d) from \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}:${channel}\`."
             echo
             echo "## Download"
             echo
@@ -198,8 +225,18 @@ jobs:
               echo "- **Linux:** \`NanoBorealis-linux-x86_64.tar.gz\`, then run \`./install.sh\`"
             } >> notes.md
           fi
-          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "NanoBorealis ${day}" --notes-file notes.md \
-            "${parts[@]}" "$name.sha256" SHA256SUMS-parts "${app_files[@]}"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file notes.md \
+            "${release_flags[@]}" "${parts[@]}" "$name.sha256" SHA256SUMS-parts "${app_files[@]}"
+
+          # Keep the two newest testing and dev installers; each is about 5 GB.
+          if [ "$channel" != stable ]; then
+            old_tags="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
+              --jq "[.[] | select(.tagName | startswith(\"nanoborealis-${channel}-\"))] | sort_by(.createdAt) | reverse | .[2:] | .[].tagName" \
+              || echo "::warning::couldn't list old ${channel} installers" >&2)"
+            for old in $old_tags; do
+              gh release delete "$old" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || echo "::warning::couldn't remove $old"
+            done
+          fi
 
       - name: Upload to S3
         if: inputs.upload-to-s3 == true && github.event_name != 'pull_request'
