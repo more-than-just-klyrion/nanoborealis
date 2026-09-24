@@ -35,7 +35,7 @@ expect "compute-config compiles" python3 -c 'import ast, sys; ast.parse(open(sys
 for f in /usr/libexec/nanoborealis-relay /usr/share/nanoborealis/pool.py; do
     expect "$f compiles" python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$f"
 done
-expect "pool node service template" grep -q '^Image=ghcr.io/more-than-just-klyrion/nanoborealis-pool:' \
+expect "pool node service template" grep -q '^Image=ghcr.io/more-than-just-kyrion/nanoborealis-pool:' \
     /usr/share/nanoborealis/exo.container
 expect "pool relay service installed" test -f /usr/lib/systemd/system/nanoborealis-pool-relay.service
 

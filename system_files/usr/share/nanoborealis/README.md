@@ -81,10 +81,10 @@ nanoborealis pool status                                    # the computers, the
 
 `serve` places the model where it fits, waits while each computer downloads its part, then makes it the agent's first choice. The cloud models stay as fallbacks, and `nanoborealis compute use cloud` puts them first again. The agent reaches the pool through a relay on its own computer that needs a token and passes on chat requests only, so it can't make the pool download or delete anything. `leave` takes the computer out and keeps its downloaded models for next time; `leave --delete-models` removes them.
 
-Pools run on the processor today, which is slow for the agent's long prompts. A pool of NVIDIA GPUs needs exo's CUDA build, which comes next. Another engine, such as a fork of exo, builds from [`pool/Containerfile`](https://github.com/more-than-just-klyrion/nanoborealis/blob/main/pool/Containerfile) with `EXO_REPO` and `EXO_REF`.
+Pools run on the processor today, which is slow for the agent's long prompts. A pool of NVIDIA GPUs needs exo's CUDA build, which comes next. Another engine, such as a fork of exo, builds from [`pool/Containerfile`](https://github.com/more-than-just-kyrion/nanoborealis/blob/main/pool/Containerfile) with `EXO_REPO` and `EXO_REF`.
 
 ## Changing things
 
 - **Models:** **Settings → Models** in the WebUI. Changes are saved in the agent's home.
 - **nanobot version:** `nanoborealis rebuild 0.3.6`
-- **Use the agent from another device:** run `nanoborealis remote on`, then connect with the [NanoBorealis client](https://github.com/more-than-just-klyrion/nanoborealis/tree/main/client) or a browser at the address it prints. The password still applies. Reinstalling the agent turns remote access back off.
+- **Use the agent from another device:** run `nanoborealis remote on`, then connect with the [NanoBorealis client](https://github.com/more-than-just-kyrion/nanoborealis/tree/main/client) or a browser at the address it prints. The password still applies. Reinstalling the agent turns remote access back off.

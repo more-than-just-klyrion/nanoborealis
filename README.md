@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/more-than-just-klyrion/nanoborealis/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/more-than-just-klyrion/nanoborealis?label=release&color=2dd4bf"></a>
-  <a href="https://github.com/more-than-just-klyrion/nanoborealis/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/more-than-just-klyrion/nanoborealis/build.yml?label=build"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/more-than-just-klyrion/nanoborealis?color=8b5cf6"></a>
+  <a href="https://github.com/more-than-just-kyrion/nanoborealis/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/more-than-just-kyrion/nanoborealis?label=release&color=2dd4bf"></a>
+  <a href="https://github.com/more-than-just-kyrion/nanoborealis/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/more-than-just-kyrion/nanoborealis/build.yml?label=build"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/more-than-just-kyrion/nanoborealis?color=8b5cf6"></a>
 </p>
 
 **NanoBorealis** is a Linux desktop with an AI agent built in. The agent writes, runs and fixes code on your computer, and it's free: it runs on free cloud models and on the hardware you already own.
@@ -13,11 +13,11 @@
 It's built on [Aurora](https://getaurora.dev), a polished KDE Plasma desktop on Fedora Atomic from the [Universal Blue](https://universal-blue.org) family. The agent is [nanobot](https://github.com/HKUDS/nanobot), running in a sandbox it can't escape to your files or your network.
 
 <p align="center">
-  <a href="https://github.com/more-than-just-klyrion/nanoborealis/releases/latest/download/NanoBorealis-Setup.exe"><b>Download for Windows</b></a>
+  <a href="https://github.com/more-than-just-kyrion/nanoborealis/releases/latest/download/NanoBorealis-Setup.exe"><b>Download for Windows</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/more-than-just-klyrion/nanoborealis/releases/latest/download/NanoBorealis-macos.dmg"><b>macOS</b></a>
+  <a href="https://github.com/more-than-just-kyrion/nanoborealis/releases/latest/download/NanoBorealis-macos.dmg"><b>macOS</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/more-than-just-klyrion/nanoborealis/releases/latest/download/NanoBorealis-linux-x86_64.tar.gz"><b>Linux</b></a>
+  <a href="https://github.com/more-than-just-kyrion/nanoborealis/releases/latest/download/NanoBorealis-linux-x86_64.tar.gz"><b>Linux</b></a>
   <br>
   <sub>The NanoBorealis app: always the newest version. It also makes the install stick for you.</sub>
 </p>
@@ -41,7 +41,7 @@ It's built on [Aurora](https://getaurora.dev), a polished KDE Plasma desktop on 
 
 ### With the NanoBorealis app
 
-1. **Install the app**: [Windows](https://github.com/more-than-just-klyrion/nanoborealis/releases/latest/download/NanoBorealis-Setup.exe) (run it), [macOS](https://github.com/more-than-just-klyrion/nanoborealis/releases/latest/download/NanoBorealis-macos.dmg) (drag to Applications, then right-click and **Open** the first time), or [Linux](https://github.com/more-than-just-klyrion/nanoborealis/releases/latest/download/NanoBorealis-linux-x86_64.tar.gz) (unpack, run `./install.sh`).
+1. **Install the app**: [Windows](https://github.com/more-than-just-kyrion/nanoborealis/releases/latest/download/NanoBorealis-Setup.exe) (run it), [macOS](https://github.com/more-than-just-kyrion/nanoborealis/releases/latest/download/NanoBorealis-macos.dmg) (drag to Applications, then right-click and **Open** the first time), or [Linux](https://github.com/more-than-just-kyrion/nanoborealis/releases/latest/download/NanoBorealis-linux-x86_64.tar.gz) (unpack, run `./install.sh`).
 2. **Make an install stick**: pick a USB stick of 8 GB or more, paste your OpenRouter key, and the app downloads the installer straight onto the stick and checks it. (Windows and Linux.)
 3. **Boot the new computer from the stick.** Its boot menu opens with **F9** on HP, **F12** on Dell and Lenovo, or **Option** on a Mac.
 4. **Install**, and tick **Make this user administrator**.
@@ -58,7 +58,7 @@ Use a **dedicated OpenRouter key with a low credit limit**: the agent can read i
 **Already on Aurora?** Switch without reinstalling:
 
 ```bash
-sudo bootc switch ghcr.io/more-than-just-klyrion/nanoborealis:stable
+sudo bootc switch ghcr.io/more-than-just-kyrion/nanoborealis:stable
 systemctl reboot
 ```
 

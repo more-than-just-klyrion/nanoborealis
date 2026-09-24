@@ -7,7 +7,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Container]
-Image=ghcr.io/more-than-just-klyrion/nanoborealis-pool:cpu
+Image=ghcr.io/more-than-just-kyrion/nanoborealis-pool:cpu
 ContainerName=exo
 # The host's network: pool nodes find each other and trade model layers over the local network.
 Network=host

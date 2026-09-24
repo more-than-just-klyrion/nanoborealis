@@ -6,7 +6,7 @@ set -euo pipefail
 AGENT_USER="nanobot-agent"
 IMAGE="localhost/nanoborealis-agent:latest"
 WEBUI_URL="http://127.0.0.1:8765"
-OS_IMAGE="ghcr.io/more-than-just-klyrion/nanoborealis"
+OS_IMAGE="ghcr.io/more-than-just-kyrion/nanoborealis"
 
 usage() {
     cat <<EOF
@@ -84,6 +84,13 @@ case "$cmd" in
         done
         want="$OS_IMAGE:$channel"
         tracked="$(tracked_image)"
+        # Only move to a new address once it's published there (e.g. while the project moves
+        # to a new GitHub name); until then, keep updating from where this system already is.
+        if [ -n "$tracked" ] && [ "$tracked" != "$want" ] && command -v skopeo >/dev/null \
+            && ! skopeo inspect --raw "docker://$want" >/dev/null 2>&1; then
+            echo "$want isn't published yet; checking $tracked instead."
+            want="$tracked"
+        fi
         if [ "$tracked" != "$want" ]; then
             # A new channel, or a system still following an earlier name: switch the tracked image.
             echo "This system follows ${tracked:-an unknown image}; updates will come from $want."
@@ -121,7 +128,7 @@ case "$cmd" in
         # models too big for any one of them. Any computer can join, with or without the agent;
         # the node runs as its own account, like the agent does.
         POOL_USER="nanoborealis-pool"
-        POOL_IMAGE="ghcr.io/more-than-just-klyrion/nanoborealis-pool:cpu"
+        POOL_IMAGE="ghcr.io/more-than-just-kyrion/nanoborealis-pool:cpu"
         me="$(basename "$0")"
         pool_py() { python3 /usr/share/nanoborealis/pool.py "$@"; }
         pool_home() { getent passwd "$POOL_USER" | cut -d: -f6; }

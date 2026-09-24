@@ -15,7 +15,7 @@ dependencies = [
 desktop = ["flet-desktop==1.0.1"]
 
 [tool.flet]
-org = "io.github.more-than-just-klyrion"
+org = "io.github.more-than-just-kyrion"
 product = "NanoBorealis"
 company = "NanoBorealis"
 copyright = "NanoBorealis contributors"

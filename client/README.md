@@ -51,7 +51,7 @@ You need Ollama installed; the client links to it if it's missing. **Stop sharin
 
 ## Run it
 
-**Install it:** download it from the [latest release](https://github.com/more-than-just-klyrion/nanoborealis/releases/latest). No Python needed.
+**Install it:** download it from the [latest release](https://github.com/more-than-just-kyrion/nanoborealis/releases/latest). No Python needed.
 
 - **Windows:** run `NanoBorealis-Setup-….exe`. It installs for your user, with Start menu and desktop shortcuts, and uninstalls from Settings → Apps.
 - **macOS:** open `NanoBorealis-…-macos.dmg` and drag NanoBorealis to Applications. It isn't notarized yet, so the first time, right-click it and choose **Open**.

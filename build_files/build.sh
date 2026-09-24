@@ -29,7 +29,7 @@ systemctl mask uupd.timer bootc-fetch-apply-updates.timer rpm-ostreed-automatic.
 # Rebrand: the boot menu, System Info, and fastfetch read these. ID and VARIANT_ID stay
 # as Aurora's so Universal Blue's update tooling keeps recognising the system.
 . /usr/lib/os-release
-REPO_URL=https://github.com/more-than-just-klyrion/nanoborealis
+REPO_URL=https://github.com/more-than-just-kyrion/nanoborealis
 sed -i \
     -e 's|^NAME=.*|NAME="NanoBorealis"|' \
     -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"NanoBorealis ${VERSION_ID:-}\"|" \

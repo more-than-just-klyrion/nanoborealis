@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
-REPO = "more-than-just-klyrion/nanoborealis"
+REPO = "more-than-just-kyrion/nanoborealis"
 MAGIC = b"NANOBOREALIS-SETUP-V1\n"
 ALIGN = 1 << 20
 CHUNK = 4 << 20

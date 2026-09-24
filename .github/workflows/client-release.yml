@@ -58,7 +58,7 @@ jobs:
             --add-data "assets${sep}assets" \
             --product-name NanoBorealis --product-version "$VERSION" --file-version "$VERSION" \
             --file-description "NanoBorealis" --company-name "NanoBorealis contributors" \
-            --copyright "Apache-2.0" --bundle-id io.github.more-than-just-klyrion.nanoborealis \
+            --copyright "Apache-2.0" --bundle-id io.github.more-than-just-kyrion.nanoborealis \
             --distpath ../dist
           ls ../dist
 
