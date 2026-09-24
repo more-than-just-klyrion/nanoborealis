@@ -12,6 +12,7 @@ chmod 0755 /usr/libexec/nanoborealis-firstrun \
            /usr/libexec/nanoborealis-migrate \
            /usr/libexec/nanoborealis-setup-from-stick \
            /usr/libexec/nanoborealis-relay \
+           /usr/libexec/nanoborealis-wifi-resume \
            /usr/share/nanoborealis/install.sh \
            /usr/share/nanoborealis/nanoborealis \
            /usr/share/nanoborealis/image/entrypoint.sh
@@ -20,7 +21,7 @@ ln -sf /usr/share/nanoborealis/nanoborealis /usr/bin/nanoborealis
 ln -sf /usr/share/nanoborealis/nanoborealis /usr/bin/nanoaurora
 ln -sf /usr/share/nanoborealis/nanoborealis /usr/bin/nanobot-os
 
-systemctl enable nanoborealis-firewall.service nanoborealis-migrate.service
+systemctl enable nanoborealis-firewall.service nanoborealis-migrate.service nanoborealis-wifi-resume.service
 
 # Updates are opt-in: machines only move to a newer build when their owner runs
 # `nanoborealis update`. Masking (not just disabling) keeps presets from re-enabling these.

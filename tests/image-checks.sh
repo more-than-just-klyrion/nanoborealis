@@ -58,6 +58,8 @@ rm -rf "$units"
 # Services and update policy.
 expect "network guard enabled" systemctl is-enabled nanoborealis-firewall.service
 expect "migration enabled" systemctl is-enabled nanoborealis-migrate.service
+expect "Wi-Fi repair after sleep enabled" systemctl is-enabled nanoborealis-wifi-resume.service
+expect "Wi-Fi repair script parses" bash -n /usr/libexec/nanoborealis-wifi-resume
 for timer in uupd.timer bootc-fetch-apply-updates.timer rpm-ostreed-automatic.timer; do
     state="$(systemctl is-enabled "$timer" 2>/dev/null || true)"
     [ "$state" = masked ] && pass "$timer masked (updates are opt-in)" || flunk "$timer is '$state', not masked"
