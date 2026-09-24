@@ -6,6 +6,13 @@ marker="${XDG_STATE_HOME:-$HOME/.local/state}/nanoborealis/firstrun-done"
 
 if [ "${1:-}" = "--run" ]; then
     cd /usr/share/nanoborealis || exit 1
+    # Setup downloads the agent, and right after an install Wi-Fi may not be connected yet.
+    if command -v nm-online >/dev/null && ! nm-online -q -t 10; then
+        echo "Setup needs the internet. Connect to a network from the icon in the panel,"
+        echo "and setup carries on by itself."
+        until nm-online -q -t 30; do :; done
+        echo "Connected."
+    fi
     if bash install.sh; then
         mkdir -p "$(dirname "$marker")" && touch "$marker"
         # Installed from a stick set to the testing or dev build: bring it up to date now. A stable
