@@ -15,6 +15,18 @@ if [ "${1:-}" = "--run" ]; then
     fi
     if bash install.sh; then
         mkdir -p "$(dirname "$marker")" && touch "$marker"
+        # An install without a network leaves the clock on UTC. Set the time zone from this
+        # network's location, the way the Fedora installer does.
+        case "$(timedatectl show -p Timezone --value 2>/dev/null)" in
+            ""|UTC|Etc/UTC|Etc/Universal|Universal|Zulu)
+                zone="$(curl -fsS --max-time 10 https://geoip.fedoraproject.org/city 2>/dev/null \
+                    | python3 -c 'import json, sys; print(json.load(sys.stdin).get("time_zone") or "")' 2>/dev/null)"
+                if [ -n "$zone" ] && timedatectl list-timezones 2>/dev/null | grep -qx "$zone" \
+                    && sudo timedatectl set-timezone "$zone"; then
+                    echo
+                    echo "Time zone set to $zone from your network. Change it in System Settings > Date & Time."
+                fi ;;
+        esac
         # Installed from a stick set to the testing or dev build: bring it up to date now. A stable
         # installer written for one of those builds has only pointed the computer at it, and a
         # testing or dev installer can be a build or two behind. `update` says whether to restart.
@@ -41,4 +53,9 @@ fi
 [ -e "${XDG_STATE_HOME:-$HOME/.local/state}/nanobot-os/firstrun-done" ] && exit 0
 id -nG | tr ' ' '\n' | grep -qx wheel || exit 0
 
-exec konsole --hold -p tabtitle="NanoBorealis setup" -e /usr/libexec/nanoborealis-firstrun --run
+# The Welcome Center opens at first login too: set up the agent once it's closed, not on top of it.
+for _ in 1 2 3 4 5 6; do pgrep -u "$UID" -x plasma-welcome >/dev/null && break; sleep 2; done
+while pgrep -u "$UID" -x plasma-welcome >/dev/null; do sleep 2; done
+
+exec konsole --hold --profile NanoBorealis -p tabtitle="NanoBorealis setup" \
+    -e /usr/libexec/nanoborealis-firstrun --run

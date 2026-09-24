@@ -41,10 +41,19 @@ sed -i \
     -e "s|^BUG_REPORT_URL=.*|BUG_REPORT_URL=\"$REPO_URL/issues\"|" \
     /usr/lib/os-release
 grep -q '^LOGO=' /usr/lib/os-release || echo 'LOGO=distributor-logo' >> /usr/lib/os-release
+# The name a new computer suggests for itself (first-boot setup, the network).
+sed -i 's|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="nanoborealis"|' /usr/lib/os-release
+grep -q '^DEFAULT_HOSTNAME=' /usr/lib/os-release || echo 'DEFAULT_HOSTNAME="nanoborealis"' >> /usr/lib/os-release
+
+# Setup's password prompt without sudo's first-use lecture.
+chmod 0440 /etc/sudoers.d/nanoborealis
+visudo -cf /etc/sudoers.d/nanoborealis
 
 # --- The NanoBorealis look ------------------------------------------------------------------
-# Every override here has a check in tests/image-checks.sh, so an upstream update that replaces
-# one of these files fails the build instead of quietly bringing Aurora's look back.
+# NanoBorealis has its own look: the aurora wallpaper, a night-and-aurora-teal color scheme, a
+# floating dock, its own splash, lock screen and terminal. Aurora's themes, wallpapers and names
+# are removed, so nothing can fall back to them. Every step has a check in tests/image-checks.sh,
+# so an upstream update that brings Aurora's look back fails the build.
 B=/ctx/branding
 
 # The star, wherever KDE and other apps look for the distribution's logo.
@@ -57,48 +66,88 @@ install -Dm0644 "$B/os/system-logo.png" /usr/share/pixmaps/system-logo.png
 install -Dm0644 "$B/os/system-logo-white.png" /usr/share/pixmaps/system-logo-white.png
 gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
 
-# The desktop: Aurora's look-and-feel, as NanoBorealis, with the aurora wallpaper and star splash.
-aurora_lnf=/usr/share/plasma/look-and-feel/dev.getaurora.aurora.desktop
-lnf=/usr/share/plasma/look-and-feel/org.nanoborealis.desktop
-rm -rf "$lnf"
-cp -a "$aurora_lnf" "$lnf"
-python3 - "$lnf" <<'PY'
-import json, re, sys
-from pathlib import Path
-lnf = Path(sys.argv[1])
-meta_file = lnf / "metadata.json"
-meta = json.loads(meta_file.read_text())
-plugin = meta.setdefault("KPlugin", {})
-for key in [k for k in plugin if k.startswith(("Name[", "Description["))]:
-    del plugin[key]  # translations would still say Aurora
-plugin.update(Id="org.nanoborealis.desktop", Name="NanoBorealis",
-              Description="Breeze Dark under an aurora: the NanoBorealis desktop")
-meta_file.write_text(json.dumps(meta, indent=4) + "\n")
-defaults = lnf / "contents" / "defaults"
-text = re.sub(r"(?ms)^\[Wallpaper\].*?(?=^\[|\Z)", "", defaults.read_text())
-text = text.replace("Theme=dev.getaurora.aurora", "Theme=org.nanoborealis.desktop")
-defaults.write_text(text.rstrip() + "\n\n[Wallpaper]\nImage=NanoBorealis\n")
-for script in (lnf / "contents").rglob("*.js"):  # a layout may name Aurora's wallpaper directly
-    old = script.read_text()
-    new = old.replace("/usr/share/wallpapers/Aurora", "/usr/share/wallpapers/NanoBorealis")
-    if new != old:
-        script.write_text(new)
-PY
-find "$lnf/contents/splash" -type f \( -iname '*logo*' -o -iname '*aurora*' \) 2>/dev/null | while read -r art; do
-    case "$art" in
-        *.svgz) gzip -c "$B/os/nanoborealis-mark-white.svg" > "$art" ;;
-        *.svg) cp "$B/os/nanoborealis-mark-white.svg" "$art" ;;
-        *.png) cp "$B/os/system-logo-white.png" "$art" ;;
-    esac
+# Aurora's desktop themes and wallpapers go. Wallpapers no package owns are Aurora's additions;
+# KDE's and Fedora's own stay. KDE falls back to the "Next" wallpaper when nothing else is set,
+# so that becomes ours as well.
+rm -rf /usr/share/plasma/look-and-feel/dev.getaurora.*
+for wall in /usr/share/wallpapers/*; do
+    [ "$(basename "$wall")" = NanoBorealis ] && continue
+    if [[ "$(readlink -f "$wall")" == /usr/share/backgrounds/aurora/* ]] || ! rpm -qf "$wall" >/dev/null 2>&1; then
+        rm -rf "$wall"
+    fi
 done
-kwriteconfig6 --file /etc/xdg/kdeglobals --group KDE --key LookAndFeelPackage org.nanoborealis.desktop
-kwriteconfig6 --file /etc/xdg/kscreenlockerrc --group Greeter --group Wallpaper --group org.kde.image \
-    --group General --key Image "file:///usr/share/wallpapers/NanoBorealis/"
+rm -rf /usr/share/backgrounds/aurora
+find /usr/share/backgrounds -maxdepth 1 -xtype l -delete
+rm -rf /usr/share/wallpapers/Next
+ln -s NanoBorealis /usr/share/wallpapers/Next
 
-# fastfetch shows the star.
-sed -i 's|/usr/share/ublue-os/aurora-ascii-logo.txt|/usr/share/nanoborealis/fastfetch-logo.txt|' \
+# Our look-and-feel (system_files) gets the star for its splash screen.
+install -Dm0644 "$B/nanoborealis.svg" \
+    /usr/share/plasma/look-and-feel/org.nanoborealis.desktop/contents/splash/images/nanoborealis.svg
+
+# KDE's defaults for new accounts, and for the login and first-boot screens. Fedora's kde-settings
+# profile is also on KDE's config path, and Aurora fills it with its own theme, so the same keys go
+# into both: whichever KDE reads first, it finds NanoBorealis.
+for xdg in /etc/xdg /usr/share/kde-settings/kde-profile/default/xdg; do
+    mkdir -p "$xdg"
+    kwriteconfig6 --file "$xdg/kdeglobals" --group KDE --key LookAndFeelPackage org.nanoborealis.desktop
+    kwriteconfig6 --file "$xdg/kdeglobals" --group KDE --key widgetStyle Breeze
+    kwriteconfig6 --file "$xdg/kdeglobals" --group KDE --key ColorScheme NanoBorealis
+    kwriteconfig6 --file "$xdg/kdeglobals" --group General --key ColorScheme NanoBorealis
+    kwriteconfig6 --file "$xdg/kdeglobals" --group Icons --key Theme breeze-dark
+    kwriteconfig6 --file "$xdg/plasmarc" --group Theme --key name default
+    kwriteconfig6 --file "$xdg/ksplashrc" --group KSplash --key Engine KSplashQML
+    kwriteconfig6 --file "$xdg/ksplashrc" --group KSplash --key Theme org.nanoborealis.desktop
+    kwriteconfig6 --file "$xdg/kscreenlockerrc" --group Greeter --key WallpaperPlugin org.kde.image
+    kwriteconfig6 --file "$xdg/kscreenlockerrc" --group Greeter --group Wallpaper --group org.kde.image \
+        --group General --key Image "file:///usr/share/wallpapers/NanoBorealis/"
+    kwriteconfig6 --file "$xdg/kscreenlockerrc" --group Greeter --group Wallpaper --group org.kde.image \
+        --group General --key PreviewImage "file:///usr/share/wallpapers/NanoBorealis/"
+    kwriteconfig6 --file "$xdg/kwinrc" --group org.kde.kdecoration2 --key library org.kde.breeze
+    kwriteconfig6 --file "$xdg/kwinrc" --group org.kde.kdecoration2 --key theme Breeze
+    kwriteconfig6 --file "$xdg/konsolerc" --group "Desktop Entry" --key DefaultProfile NanoBorealis.profile
+    kwriteconfig6 --file "$xdg/kcm-about-distrorc" --group General --key Name NanoBorealis
+    kwriteconfig6 --file "$xdg/kcm-about-distrorc" --group General --key Website "$REPO_URL"
+    kwriteconfig6 --file "$xdg/kcm-about-distrorc" --group General --key LogoPath /usr/share/pixmaps/system-logo-white.png
+    # The launcher's favorites: the agent instead of Aurora's docs.
+    printf '[General]\nPrepend=%s\nIgnoreDefaults=true\n' \
+        'preferred://browser;nanoborealis.desktop;systemsettings.desktop;org.kde.dolphin.desktop;org.kde.kate.desktop;org.kde.konsole.desktop;io.github.kolunmi.Bazaar.desktop' \
+        > "$xdg/kicker-extra-favoritesrc"
+done
+# The colors themselves too, not just the scheme's name, so every KDE app draws with them from
+# the first login on.
+python3 - <<'PY'
+from pathlib import Path
+blocks, keep = [], False
+for line in Path("/usr/share/color-schemes/NanoBorealis.colors").read_text().splitlines():
+    if line.startswith("["):
+        keep = line.startswith(("[Colors:", "[ColorEffects:", "[WM]"))
+    if keep:
+        blocks.append(line)
+kdeglobals = Path("/etc/xdg/kdeglobals")
+kdeglobals.write_text(kdeglobals.read_text().rstrip() + "\n\n" + "\n".join(blocks).strip() + "\n")
+PY
+
+# Aurora's own launchers: its documentation, forum and updater (NanoBorealis updates with
+# `nanoborealis update`; the desktop has its icon). Aurora's settings page stays in System
+# Settings, out of the app menu.
+rm -f /usr/share/applications/dev.getaurora.documentation.desktop \
+      /usr/share/applications/dev.getaurora.discussions.desktop \
+      /usr/share/applications/dev.getaurora.offline-docs.desktop \
+      /usr/share/applications/dev.getaurora.system-update.desktop \
+      /usr/share/kglobalaccel/dev.getaurora.offline-docs.desktop
+rm -rf /usr/share/doc/aurora
+if [ -f /usr/share/applications/kcm_ublue.desktop ]; then
+    grep -q '^NoDisplay=' /usr/share/applications/kcm_ublue.desktop \
+        || sed -i '/^\[Desktop Entry\]/a NoDisplay=true' /usr/share/applications/kcm_ublue.desktop
+fi
+
+# fastfetch shows the star, in NanoBorealis colors.
+sed -i -e 's|/usr/share/ublue-os/aurora-ascii-logo.txt|/usr/share/nanoborealis/fastfetch-logo.txt|' \
+       -e 's|"1": "white"|"1": "#5eead4"|' \
+       -e 's|"user": "#b75761"|"user": "#5eead4"|' -e 's|"at": "#a64c6a"|"at": "#8b9ab3"|' \
+       -e 's|"host": "#4075bf"|"host": "#a78bfa"|' -e 's|"keyColor": "#ad67d7"|"keyColor": "#5eead4"|' \
     /usr/share/ublue-os/fastfetch.jsonc
-sed -i 's|"1": "white"|"1": "#5eead4"|' /usr/share/ublue-os/fastfetch.jsonc
 
 # Boot splash: the star on a night sky, with Fedora's spinner. The initramfs carries the theme,
 # so it's rebuilt the way Aurora builds it.

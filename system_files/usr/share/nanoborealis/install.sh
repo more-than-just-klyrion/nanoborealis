@@ -102,7 +102,9 @@ ok "$PROJECTS (shortcut in your home: nanoborealis-projects)"
 say "Network guard"
 if systemctl cat nanoborealis-firewall.service >/dev/null 2>&1; then
     sudo systemctl restart nanoborealis-firewall.service
-    if sudo nft list table inet nanoborealis 2>/dev/null | grep -q skuid; then
+    # Read the rules first: `nft | grep -q` under pipefail can fail when grep stops reading early.
+    rules="$(sudo nft list table inet nanoborealis 2>/dev/null || true)"
+    if grep -q skuid <<<"$rules"; then
         ok "$AGENT_USER can reach the internet but not your local network"
     else
         warn "firewall rules did not load - check: systemctl status nanoborealis-firewall"

@@ -1,0 +1,11 @@
+# The Welcome Center's first page (replaces Aurora's). Read by plasma-welcome.
+[Desktop Entry]
+Type=Application
+
+# The first paragraph on the Welcome page
+Name=Welcome to NanoBorealis
+
+# The image on the Welcome page, its caption, and where clicking it goes
+Icon=nanoborealis
+Comment=Your AI agent sets itself up as soon as you close this window.
+URL=https://github.com/more-than-just-kyrion/nanoborealis#readme

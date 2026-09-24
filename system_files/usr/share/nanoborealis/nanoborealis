@@ -108,8 +108,14 @@ case "$cmd" in
         else
             echo "Checking $want for a newer build..."
             check="$(sudo bootc upgrade --check 2>&1 || true)"
-            if ! grep -q "Update available for:" <<<"$check"; then
-                echo "NanoBorealis is up to date."
+            # Right after an install, the registry's copy of the very same build looks new: the
+            # installer carries the image in another format. Same version, nothing to get.
+            offered="$(sed -n 's/^ *Version: *//p' <<<"$check" | head -n 1)"
+            running="$(sudo bootc status --format=json 2>/dev/null | python3 -c \
+                'import json, sys; print((((json.load(sys.stdin).get("status") or {}).get("booted") or {}).get("image") or {}).get("version") or "")' \
+                2>/dev/null || true)"
+            if ! grep -q "Update available for:" <<<"$check" || { [ -n "$offered" ] && [ "$offered" = "$running" ]; }; then
+                echo "NanoBorealis is up to date${running:+ ($running)}."
                 flatpak update -y --noninteractive || true
                 exit 0
             fi

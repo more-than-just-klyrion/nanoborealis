@@ -85,16 +85,35 @@ expect "Avahi can announce this machine to clients (nanoborealis remote on)" tes
 expect "distributor logo is the NanoBorealis star" grep -q NanoBorealis /usr/share/icons/hicolor/scalable/places/distributor-logo.svg
 expect "app icon installed" test -f /usr/share/icons/hicolor/scalable/apps/nanoborealis.svg
 expect "os-release logo is the star" grep -q '^LOGO=distributor-logo$' /usr/lib/os-release
-expect "Aurora's look-and-feel is still there to build on" test -d /usr/share/plasma/look-and-feel/dev.getaurora.aurora.desktop
-expect "NanoBorealis look-and-feel installed" grep -q '"Id": "org.nanoborealis.desktop"' \
-    /usr/share/plasma/look-and-feel/org.nanoborealis.desktop/metadata.json
-expect "it is the default look-and-feel" grep -q '^LookAndFeelPackage=org.nanoborealis.desktop$' /etc/xdg/kdeglobals
-expect "its default wallpaper is the aurora" grep -q '^Image=NanoBorealis$' \
-    /usr/share/plasma/look-and-feel/org.nanoborealis.desktop/contents/defaults
-expect "its splash screen is ours" grep -q 'Theme=org.nanoborealis.desktop' \
-    /usr/share/plasma/look-and-feel/org.nanoborealis.desktop/contents/defaults
+expect "new computers suggest the name nanoborealis" grep -q '^DEFAULT_HOSTNAME="nanoborealis"$' /usr/lib/os-release
+lnf=/usr/share/plasma/look-and-feel/org.nanoborealis.desktop
+expect "NanoBorealis look-and-feel installed" grep -q '"Id": "org.nanoborealis.desktop"' "$lnf/metadata.json"
+expect "its layout sets the aurora wallpaper" grep -q 'wallpapers/NanoBorealis' "$lnf/contents/layouts/org.kde.plasma.desktop-layout.js"
+expect "its splash screen shows the star" test -f "$lnf/contents/splash/Splash.qml" -a -f "$lnf/contents/splash/images/nanoborealis.svg"
+expect "color scheme and terminal colors installed" test -f /usr/share/color-schemes/NanoBorealis.colors \
+    -a -f /usr/share/konsole/NanoBorealis.colorscheme -a -f /usr/share/konsole/NanoBorealis.profile
 expect "wallpaper package installed" test -f /usr/share/wallpapers/NanoBorealis/contents/images/3840x2160.jpg
-expect "lock screen shows the aurora" grep -q NanoBorealis /etc/xdg/kscreenlockerrc
+expect "the wallpaper KDE falls back to is the aurora" test "$(readlink -f /usr/share/wallpapers/Next)" = /usr/share/wallpapers/NanoBorealis
+# Aurora fills Fedora's kde-settings profile with its own theme, and KDE reads that as well.
+for xdg in /etc/xdg /usr/share/kde-settings/kde-profile/default/xdg; do
+    expect "$xdg: look-and-feel is NanoBorealis" grep -q '^LookAndFeelPackage=org.nanoborealis.desktop$' "$xdg/kdeglobals"
+    expect "$xdg: colors are NanoBorealis" grep -q '^ColorScheme=NanoBorealis$' "$xdg/kdeglobals"
+    expect "$xdg: splash is NanoBorealis" grep -q '^Theme=org.nanoborealis.desktop$' "$xdg/ksplashrc"
+    expect "$xdg: lock screen shows the aurora" grep -q 'wallpapers/NanoBorealis' "$xdg/kscreenlockerrc"
+    expect "$xdg: About page names NanoBorealis" grep -q '^Name=NanoBorealis$' "$xdg/kcm-about-distrorc"
+    expect "$xdg: Konsole uses the NanoBorealis profile" grep -q '^DefaultProfile=NanoBorealis.profile$' "$xdg/konsolerc"
+done
+expect "system colors carry the scheme itself" grep -q '^\[Colors:Window\]$' /etc/xdg/kdeglobals
+expect "no Aurora look-and-feel left" bash -c '! ls /usr/share/plasma/look-and-feel | grep -qi aurora'
+expect "no Aurora wallpapers left" bash -c '! ls /usr/share/wallpapers /usr/share/backgrounds | grep -qi aurora'
+expect "Welcome Center greets as NanoBorealis" grep -q '^Name=Welcome to NanoBorealis$' \
+    /usr/share/plasma/plasma-welcome/intro-customization.desktop
+expect "terminal greeting and tips are NanoBorealis's" bash -c \
+    'grep -q "Welcome to NanoBorealis" /usr/share/ublue-os/motd/template.md && ! grep -rqi aurora /usr/share/ublue-os/motd'
+visible_aurora="$(grep -lis '^Name=.*aurora' /usr/share/applications/*.desktop | while read -r f; do
+    grep -qiE '^(NoDisplay|Hidden)=true' "$f" || echo "$f"; done)"
+[ -z "$visible_aurora" ] && pass "no Aurora apps in the app menu" || flunk "Aurora apps in the app menu: $visible_aurora"
+expect "sudo settings drop-in parses" visudo -cf /etc/sudoers.d/nanoborealis
 expect "fastfetch shows the star" grep -q /usr/share/nanoborealis/fastfetch-logo.txt /usr/share/ublue-os/fastfetch.jsonc
 theme="$(plymouth-set-default-theme 2>/dev/null || true)"
 [ "$theme" = nanoborealis ] && pass "boot splash is NanoBorealis" || flunk "boot splash is '$theme'"

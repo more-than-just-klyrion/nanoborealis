@@ -1,0 +1,2 @@
+# Setup and admin prompts show just the password prompt, not sudo's first-use lecture.
+Defaults lecture = never
