@@ -165,17 +165,21 @@ jobs:
           if [ -n "$app_tag" ]; then
             gh release download "$app_tag" --repo "$GITHUB_REPOSITORY" --dir app \
               --pattern '*.exe' --pattern '*.dmg' --pattern '*linux*.tar.gz'
-            app_files=( app/* )
             app_version="${app_tag#client-v}"
+            # Fixed names, so releases/latest/download/<name> always fetches the newest app.
+            mv app/*.exe app/NanoBorealis-Setup.exe
+            mv app/*.dmg app/NanoBorealis-macos.dmg
+            mv app/*linux*.tar.gz app/NanoBorealis-linux-x86_64.tar.gz
+            app_files=( app/* )
             {
               echo
               echo "## The NanoBorealis app ($app_version)"
               echo
               echo "Chat with your agent from any computer, lend it this computer's hardware, and make install sticks, which download this installer onto a USB stick for you, with your key."
               echo
-              echo "- **Windows:** \`NanoBorealis-Setup-$app_version.exe\`"
-              echo "- **macOS:** \`NanoBorealis-$app_version-macos.dmg\` (right-click the app and choose Open the first time)"
-              echo "- **Linux:** \`NanoBorealis-$app_version-linux-x86_64.tar.gz\`, then run \`./install.sh\`"
+              echo "- **Windows:** \`NanoBorealis-Setup.exe\`"
+              echo "- **macOS:** \`NanoBorealis-macos.dmg\` (right-click the app and choose Open the first time)"
+              echo "- **Linux:** \`NanoBorealis-linux-x86_64.tar.gz\`, then run \`./install.sh\`"
             } >> notes.md
           fi
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "NanoBorealis ${day}" --notes-file notes.md \
