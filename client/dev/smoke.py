@@ -122,6 +122,68 @@ async def main(machine_file: str) -> None:
               "the second client sees the reply too")
         await second.close()
         second_task.cancel()
+
+        # What the app's control center, model picker and chat list use: nanobot's WebUI API.
+        await asyncio.sleep(0.5)
+        while not events.empty():  # the last turn's stragglers (its goal_status) belong to no check below
+            events.get_nowait()
+        await link.send_message(chat_id, "one more")
+        seen = await until("turn_end")
+        check(any(e["event"] == "message_accepted" for e in seen), "messages are sent as the WebUI sends them")
+        settings = await link.api_get("/api/settings")
+        presets = [p.get("name") for p in settings.get("model_presets") or []]
+        check("stub" in presets, f"settings list the model presets ({presets})")
+        await link.request("settings.model_configuration.create", {
+            "name": "stub-two", "model": "stub", "provider": "custom", "max_tokens": 1024,
+            "context_window_tokens": 65536})
+        presets = [p.get("name") for p in (await link.api_get("/api/settings")).get("model_presets") or []]
+        check("stub-two" in presets, "a model preset can be added")
+        await asyncio.sleep(0.5)
+        while not events.empty():
+            events.get_nowait()
+        await link.send_message(chat_id, "/model stub-two")
+        await until("turn_end")  # a command run while idle: its reply, then turn_end
+        await link.send_message(chat_id, "which model now?")
+        seen = await until("turn_end")
+        models = [e.get("model_preset") for e in seen if e["event"] == "turn_model_updated"]
+        check("stub-two" in models, f"/model switches this chat's model ({models})")
+        commands = [c.get("command") for c in (await link.api_get("/api/commands")).get("commands") or []]
+        check("/model" in commands and "/stop" in commands, f"the agent lists its commands ({len(commands)})")
+
+        temporary = await link.new_temporary_chat()
+        await link.send_message(temporary, "hello, nobody keeps this")
+        seen = await until("turn_end")
+        check(any(e.get("chat_id") == temporary for e in seen), "a temporary chat answers")
+        await link.discard_temporary_chat(temporary)
+
+        note = "data:text/plain;base64,aGVsbG8gZnJvbSBhIGZpbGU="  # "hello from a file"
+        await link.send_message(chat_id, "what's in this file?", media=[{"data_url": note, "name": "note.txt"}])
+        seen = await until("turn_end")
+        check(not any(e["event"] == "error" for e in seen), "an attachment is accepted")
+
+        key = f"websocket:{chat_id}"
+        await link.request("sidebar.update", {"state": {"pinned_keys": [key], "title_overrides": {key: "Renamed"}}})
+        state = await link.api_get("/api/webui/sidebar-state")
+        check(key in state.get("pinned_keys", []) and state.get("title_overrides", {}).get(key) == "Renamed",
+              "chats can be pinned and renamed")
+        spare = await link.new_chat()
+        await link.send_message(spare, "a chat to delete")
+        await until("turn_end")
+        result = await link.request("session.delete", {"key": f"websocket:{spare}"})
+        chats = await link.list_chats()
+        check(bool(result and result.get("deleted")) and not any(c["chat_id"] == spare for c in chats),
+              "a chat can be deleted")
+        await link.attach(chat_id)
+
+        jobs = await link.api_get("/api/webui/automations")
+        check(isinstance(jobs.get("jobs"), list), f"schedules are listed ({len(jobs.get('jobs', []))})")
+        skills = await link.api_get("/api/webui/skills")
+        check(isinstance(skills.get("skills"), list) and skills["skills"], f"skills are listed ({len(skills['skills'])})")
+        features = (await link.api_get("/api/settings/nanobot-features", timeout=90)).get("features") or []
+        telegram = next((f for f in features if f.get("name") == "telegram"), {})
+        fields = {f.get("field"): f.get("kind") for f in (telegram.get("setup") or {}).get("fields") or []}
+        check(fields.get("token") == "secret" and fields.get("allowFrom") == "list",
+              "channels come with their setup fields")
     finally:
         await link.close()
         runner.cancel()

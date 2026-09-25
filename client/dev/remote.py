@@ -65,12 +65,13 @@ def push(machine: Machine, local: str, remote_dir: str) -> None:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         tar.add(local, arcname=os.path.basename(os.path.normpath(local)),
-                filter=lambda i: None if "__pycache__" in i.name or i.name.endswith(".pyc") else i)
+                filter=lambda i: None if "__pycache__" in i.name or i.name.endswith(".pyc")
+                or "/assets/" in i.name + "/" and os.environ.get("PUSH_SKIP_ASSETS") else i)
     data = base64.b64encode(buffer.getvalue()).decode()
     target = remote_dir if remote_dir.startswith("~") else shlex.quote(remote_dir)
     staging = "~/.cache/nb-push.b64"
     run_command(machine, f"mkdir -p ~/.cache && : > {staging}")
-    step = 96_000
+    step = 3_500  # the computer takes commands up to 4 KB
     for start in range(0, len(data), step):
         status, output = run_command(machine, f"printf %s {data[start:start + step]} >> {staging}")
         if status != 0:

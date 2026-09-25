@@ -344,8 +344,14 @@ async def pair_start(data: dict, address: str) -> tuple[int, dict]:
     now = time.monotonic()
     while starts and now - starts[0] > 3600:
         starts.popleft()
+    # A device trying again replaces its own unfinished attempt: retries never pile up into the
+    # limit and lock everyone out for the ten minutes a PIN lasts.
+    for key in [key for key, request in pending.items() if request.address == address and request.pin is None]:
+        pending.pop(key, None)
     if (len(pending) >= MAX_PENDING or len(starts) >= STARTS_PER_HOUR
             or sum(1 for t in starts if now - t < 60) >= STARTS_PER_MINUTE):
+        log(f"turned down a pairing request from {device} ({address}): too many attempts "
+            f"({len(pending)} waiting, {sum(1 for t in starts if now - t < 60)} in the last minute)")
         return 429, {"error": "Too many pairing attempts. Wait a few minutes, then try again."}
     starts.append(now)
     key = secrets.token_urlsafe(16)
@@ -790,14 +796,27 @@ def agent_file(op: str, relative: str = "", content: str | None = None) -> str:
     return result.stdout
 
 
+def agent_answers() -> bool:
+    """Whether the agent's WebUI takes connections: the surest sign it's up."""
+    try:
+        with socket.create_connection((UPSTREAM_HOST, UPSTREAM_PORT), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
 def unit_state() -> dict:
+    answering = agent_answers()
     if TEST_AGENT_HOME is not None:
         return {"running": True, "state": "active", "since": None}
     result = subprocess.run(["systemctl", "--user", "-M", f"{AGENT_USER}@", "show", AGENT_UNIT,
                              "-p", "ActiveState", "-p", "SubState", "-p", "ActiveEnterTimestamp"],
                             capture_output=True, text=True, timeout=20)
     props = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
-    return {"running": props.get("ActiveState") == "active", "state": props.get("SubState") or props.get("ActiveState"),
+    if not props:
+        log(f"couldn't ask systemd about the agent: {result.stderr.strip()[:200]}")
+    state = props.get("SubState") or props.get("ActiveState") or ("running" if answering else "stopped")
+    return {"running": answering or props.get("ActiveState") == "active", "state": state,
             "since": props.get("ActiveEnterTimestamp") or None}
 
 

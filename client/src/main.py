@@ -16,26 +16,24 @@ import tempfile
 import time
 import urllib.parse
 import uuid
-from datetime import datetime
 from typing import Any
 
 import flet as ft
 
 import compute
 import discovery
+import host
+import models_catalog
 import pairing
 import stickmaker
+import theme
 import updater
 from agent_link import AgentLink, AuthError, LinkError
-from terminal import Terminal, plain
 from version import VERSION
+from workspace import Workspace
 
-NARROW = 760  # below this width the chat list moves into a drawer
-READABLE = 860  # widest the conversation column gets
-SEED = ft.Colors.TEAL
-# Bundled in assets/fonts (SIL OFL): Flutter doesn't resolve a generic "monospace" family, so
-# code and tool output would otherwise come out in the proportional UI font.
-MONO = "JetBrains Mono"
+NARROW = theme.NARROW
+MONO = theme.MONO
 PREF_ADDRESS = "nanoborealis.address"  # the last address typed on the sign-in screen
 PREF_PASSWORD = "nanoborealis.password"  # before pairing: a WebUI password; cleared on start
 PREF_MACHINES = "nanoborealis.machines"  # JSON: the paired computers (pairing.Machine)
@@ -55,20 +53,6 @@ CHANNEL_NAMES = {
     "testing": ("Testing", "Candidates for the next stable version, a few days early."),
     "dev": ("Development", "Built from every change. Newest features, occasionally broken."),
 }
-# The terminal's key buttons: what a phone keyboard, or a one-line text box, can't send.
-TERMINAL_KEYS = [
-    ("Ctrl+C", "\x03", "Stop what's running"),
-    ("Tab", "\t", "Complete what you've typed"),
-    ("↑", "\x1b[A", "Previous command"),
-    ("↓", "\x1b[B", "Next command"),
-    ("Ctrl+D", "\x04", "End input, or close the shell"),
-    ("Esc", "\x1b", "Escape"),
-]
-SUGGESTIONS = [
-    ("Plan a project", "Help me plan a small Python project. Ask me what it should do first."),
-    ("Look at my projects", "Look through ~/projects and tell me what is there."),
-    ("What can you do?", "What can you do on this machine, and what can't you do?"),
-]
 
 
 ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
@@ -79,61 +63,6 @@ def logo(size: float) -> ft.Control:
     return ft.Image(src="icon.png", width=size, height=size, fit=ft.BoxFit.CONTAIN)
 
 
-def short_time(value: Any) -> str:
-    """'2026-09-23T08:40:20.744108' -> '08:40' for today, 'Sep 21' for older."""
-    if not isinstance(value, str) or not value:
-        return ""
-    try:
-        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return ""
-    if stamp.tzinfo is not None:
-        stamp = stamp.astimezone().replace(tzinfo=None)
-    if stamp.date() == datetime.now().date():
-        return stamp.strftime("%H:%M")
-    return f"{stamp.strftime('%b')} {stamp.day}"
-
-
-def tool_title(hint: str, event: dict[str, Any] | None) -> str:
-    if hint.strip():
-        return hint.strip().splitlines()[0]
-    if not event:
-        return "tool"
-    args = event.get("arguments")
-    name = event.get("name") or "tool"
-    if isinstance(args, dict):
-        # The same short forms nanobot uses for live progress, so a chat reads the same reopened.
-        for tool, keys, template in HINTS:
-            value = next((args[k] for k in keys if isinstance(args.get(k), str) and args[k]), None)
-            if name == tool and value is not None:
-                title = template.format(value.splitlines()[0] if value else value)
-                return title if len(title) <= 140 else title[:137] + "..."
-        inner = ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in args.items())
-    else:
-        inner = "" if args is None else str(args)
-    title = f"{name}({inner})"
-    return title if len(title) <= 140 else title[:137] + "..."
-
-
-# nanobot's tool hint formats (nanobot/utils/tool_hints.py): tool, argument keys, template.
-HINTS = [
-    ("exec", ("command", "cmd"), "$ {}"),
-    ("read_file", ("path", "file_path"), "read {}"),
-    ("write_file", ("path", "file_path"), "write {}"),
-    ("edit_file", ("path", "file_path"), "edit {}"),
-    ("edit", ("file_path", "path"), "edit {}"),
-    ("list_dir", ("path",), "ls {}"),
-    ("grep", ("pattern",), 'grep "{}"'),
-    ("find_files", ("query", "glob", "path"), "find {}"),
-    ("web_search", ("query",), 'search "{}"'),
-    ("web_fetch", ("url",), "fetch {}"),
-]
-
-
-def clip(text: str, limit: int = 4000) -> str:
-    return text if len(text) <= limit else f"{text[:limit]}\n... ({len(text) - limit:,} more characters)"
-
-
 def on(fn, *args):
     """An event handler that runs coroutine function fn(*args)."""
 
@@ -141,39 +70,6 @@ def on(fn, *args):
         await fn(*args)
 
     return handler
-
-
-class ToolRow:
-    """One tool call: a spinner while it runs, then its result tucked into an expander."""
-
-    def __init__(self, title: str):
-        self.lead = ft.Container(width=20, height=20, alignment=ft.Alignment.CENTER,
-                                 content=ft.ProgressRing(width=14, height=14, stroke_width=2))
-        self.result = ft.Text("", size=12, font_family=MONO, selectable=True)
-        self.result_box = ft.Container(
-            content=self.result, visible=False, padding=10, border_radius=8,
-            bgcolor=ft.Colors.SURFACE_CONTAINER, margin=ft.Margin.only(left=12, right=12, bottom=10),
-        )
-        self.tile = ft.ExpansionTile(
-            title=ft.Text(title, size=13, font_family=MONO, color=ft.Colors.ON_SURFACE_VARIANT,
-                          max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-            leading=self.lead,
-            controls=[self.result_box],
-            expanded_cross_axis_alignment=ft.CrossAxisAlignment.STRETCH,
-            dense=True,
-            maintain_state=True,
-            tile_padding=ft.Padding.symmetric(horizontal=8),
-            shape=ft.RoundedRectangleBorder(radius=12),
-            collapsed_shape=ft.RoundedRectangleBorder(radius=12),
-        )
-
-    def finish(self, result: str, error: bool = False) -> None:
-        self.lead.content = ft.Icon(
-            ft.Icons.ERROR_OUTLINE_ROUNDED if error else ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED,
-            size=16, color=ft.Colors.ERROR if error else ft.Colors.GREEN_400,
-        )
-        self.result.value = clip(result) if result else "(no output)"
-        self.result_box.visible = True
 
 
 class NanoBorealisApp:
@@ -187,21 +83,11 @@ class NanoBorealisApp:
         self.machines: dict[str, pairing.Machine] = {}
         self.machine: pairing.Machine | None = None
         self.pairing: pairing.Pairing | None = None
-        self.terminal: Terminal | None = None
-        self.chat_id: str | None = None
-        self.chats: list[dict[str, Any]] = []
-        self.busy = False
         self.was_up = False
-        self.refresh_pending = False
         self.in_chat_view = False
-        # Pieces of the reply that is streaming in right now.
-        self.reasoning: tuple[ft.Text, ft.Text, float] | None = None
-        self.answers: dict[str, tuple[ft.Markdown, list[str]]] = {}
-        self.tools: dict[str, ToolRow] = {}
-        self.last_answer = ""
-        self.dirty: dict[int, ft.Control] = {}
-        self.flush_task: asyncio.Task | None = None
-        self.scroll_task: asyncio.Future | None = None
+        self.workspace: Workspace | None = None  # the main screen, once connected
+        self.catalog = models_catalog.Catalog()  # OpenRouter's models, for the model picker
+        self.version = VERSION
         # Compute sharing: this device hosting a model for the agent, with the owner's consent.
         self.share: dict[str, Any] = {}
         self.relay: compute.Relay | None = None
@@ -212,6 +98,10 @@ class NanoBorealisApp:
         self.sticks: list[stickmaker.Disk] = []
         self.stick_writing = False
 
+    @staticmethod
+    def logo(size: float) -> ft.Control:
+        return logo(size)
+
     # -- Startup and connecting ------------------------------------------------
 
     async def start(self) -> None:
@@ -220,12 +110,16 @@ class NanoBorealisApp:
         p.fonts = {MONO: "fonts/JetBrainsMono.ttf"}
         if p.window is not None and os.path.exists(os.path.join(ASSETS, "icon.ico")):
             p.window.icon = os.path.join(ASSETS, "icon.ico")  # title bar and taskbar on Windows
-        p.theme_mode = ft.ThemeMode.SYSTEM
-        p.theme = ft.Theme(color_scheme_seed=SEED)
-        p.dark_theme = ft.Theme(color_scheme_seed=SEED)
+        # NanoBorealis's own colors (the OS's color scheme), and on a NanoBorealis computer its font.
+        p.theme_mode = ft.ThemeMode.DARK
+        p.theme = p.dark_theme = theme.app_theme(host.system_font())
+        p.bgcolor = theme.BG
         p.padding = 0
         p.spacing = 0
         p.on_resize = self.on_resize
+        host.forget_window_shim()
+        if host.is_host() and p.window is not None:
+            p.window.maximized = True  # the computer's own agent window, like a full-screen app
         # Draw first: services such as SharedPreferences reach the device with the first
         # page update, and calling them before that waits for a listener that isn't there.
         self.show_connect()
@@ -237,6 +131,14 @@ class NanoBorealisApp:
         self.address = await self.pref_get(PREF_ADDRESS)
         self.machines = await self.load_machines()
         self.page.run_task(self.check_for_update)
+        dev = os.environ.get("NANOBOREALIS_DEV_MACHINE")  # development: start connected to a dev/remote.py pairing
+        if dev:
+            with open(dev) as f:
+                machine = pairing.Machine.from_json(json.load(f))
+            if machine is not None:
+                self.machines[machine.key] = machine
+                await self.connect(machine)
+                return
         # On a NanoBorealis computer, the app is that computer's own window onto its agent: it
         # pairs with it by itself, no PIN, and opens straight into the chat.
         here = next((m for m in self.machines.values() if m.host == "127.0.0.1"), None)
@@ -660,576 +562,76 @@ class NanoBorealisApp:
                 await self.drop_machine(link.machine)
                 self.show_connect(f"{link.machine.name}: {e}")
 
+    def show_chat(self) -> None:
+        if self.workspace is not None:
+            self.workspace.stop()
+        self.in_chat_view = True
+        self.workspace = Workspace(self)
+        self.page.controls.clear()
+        self.page.add(self.workspace.build())
+        self.page.update()
+
+    async def on_event(self, event: dict[str, Any]) -> None:
+        if self.workspace is not None and self.in_chat_view:
+            await self.workspace.on_event(event)
+
+    async def on_resize(self, _event=None) -> None:
+        if self.workspace is not None and self.in_chat_view:
+            await self.workspace.on_resize()
+            return
+        if getattr(self, "connect_card", None) is not None:
+            self.connect_card.width = self.card_width()
+        self.page.update()
+
+    def refresh_sidebar(self) -> None:
+        if self.workspace is not None and self.in_chat_view:
+            self.workspace.refresh_sidebar()
+
     async def disconnect(self) -> None:
         link, self.link = self.link, None
         if link is not None:
             await link.close()
-        self.chat_id = None
+        if self.workspace is not None:
+            self.workspace.stop()
+            self.workspace = None
         await self.pref_set(PREF_LAST_MACHINE, None)  # don't connect by itself next time
         self.show_connect()
 
     # -- Chat screen -----------------------------------------------------------
 
-    def show_chat(self) -> None:
-        self.in_chat_view = True
-        self.chat_list = ft.ListView(expand=True, spacing=2, padding=ft.Padding.symmetric(horizontal=8))
-        self.sidebar = ft.Container(width=280, bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
-                                    content=self.sidebar_column(self.chat_list))
-        self.side_divider = ft.VerticalDivider(width=1)
-        self.drawer = ft.NavigationDrawer(controls=[])
-        self.page.drawer = self.drawer
 
-        self.menu_button = ft.IconButton(ft.Icons.MENU_ROUNDED, tooltip="Chats", on_click=self.open_drawer)
-        self.title_text = ft.Text("New chat", size=16, weight=ft.FontWeight.W_600, max_lines=1,
-                                  overflow=ft.TextOverflow.ELLIPSIS, expand=True)
-        self.model_text = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
-        self.model_chip = ft.Container(content=self.model_text, visible=False, border_radius=20,
-                                       padding=ft.Padding.symmetric(horizontal=10, vertical=4),
-                                       border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT))
-        self.status_dot = ft.Container(width=10, height=10, border_radius=5, bgcolor=ft.Colors.AMBER,
-                                       tooltip="Connecting")
-        header = ft.Container(
-            padding=ft.Padding.symmetric(horizontal=12, vertical=6),
-            content=ft.Row([self.menu_button, self.title_text, self.model_chip, self.status_dot],
-                           spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        )
-        self.progress = ft.ProgressBar(bar_height=2, visible=False)
-        self.banner_text = ft.Text("", size=13, expand=True)
-        self.banner = ft.Container(
-            visible=False, bgcolor=ft.Colors.ERROR_CONTAINER, padding=ft.Padding.symmetric(horizontal=16, vertical=8),
-            content=ft.Row([ft.Icon(ft.Icons.WIFI_OFF_ROUNDED, size=18), self.banner_text], spacing=10),
-        )
-        self.messages = ft.ListView(expand=True, spacing=12)
-        self.welcome = self.welcome_view()
-        self.composer = ft.TextField(
-            hint_text="Message NanoBorealis", multiline=True, min_lines=1, max_lines=8, shift_enter=True,
-            border=ft.NoInputBorder(), expand=True, autofocus=True, text_size=15,
-            content_padding=ft.Padding.symmetric(vertical=10), on_submit=self.on_send,
-        )
-        self.send_button = ft.IconButton(ft.Icons.ARROW_UPWARD_ROUNDED, tooltip="Send (Enter)",
-                                         bgcolor=ft.Colors.PRIMARY, icon_color=ft.Colors.ON_PRIMARY,
-                                         on_click=self.on_send)
-        self.stop_button = ft.IconButton(ft.Icons.STOP_ROUNDED, tooltip="Stop", visible=False,
-                                         bgcolor=ft.Colors.ON_SURFACE, icon_color=ft.Colors.SURFACE,
-                                         on_click=self.on_stop)
-        self.footer = ft.Container(
-            padding=ft.Padding.only(left=16, right=16, top=4, bottom=14),
-            content=ft.Column(tight=True, spacing=6, controls=[
-                ft.Container(
-                    border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT), border_radius=26,
-                    bgcolor=ft.Colors.SURFACE_CONTAINER_LOW, padding=ft.Padding.only(left=18, right=8, top=4, bottom=4),
-                    content=ft.Row([self.composer, self.send_button, self.stop_button], spacing=4,
-                                   vertical_alignment=ft.CrossAxisAlignment.END),
-                ),
-                ft.Text("Enter to send, Shift+Enter for a new line. The agent can make mistakes; check its work.",
-                        size=11, color=ft.Colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER),
-            ], horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
-        )
-        main = ft.Column(
-            expand=True, spacing=0,
-            controls=[header, self.progress, self.banner, ft.Stack([self.messages, self.welcome], expand=True),
-                      self.footer],
-        )
-        self.page.controls.clear()
-        self.page.add(ft.Row([self.sidebar, self.side_divider, main], expand=True, spacing=0,
-                             vertical_alignment=ft.CrossAxisAlignment.STRETCH))
-        self.apply_layout()
-        self.render_chat_list()
-        self.page.update()
 
-    def sidebar_column(self, chat_list: ft.Control | None) -> ft.Column:
-        top = [
-            ft.Container(padding=ft.Padding.only(left=16, right=12, top=16, bottom=6),
-                         content=ft.Row([logo(28), ft.Text("NanoBorealis", size=17, weight=ft.FontWeight.W_600)],
-                                        spacing=10)),
-            ft.Container(padding=ft.Padding.symmetric(horizontal=12),
-                         content=ft.FilledTonalButton("New chat", icon=ft.Icons.ADD_ROUNDED,
-                                                      on_click=on(self.open_chat, None))),
-            ft.Container(ft.Text("Recent", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
-                         padding=ft.Padding.only(left=20, top=10, bottom=2)),
-        ]
-        sharing = self.relay is not None and self.relay.running
-        share = ft.Container(
-            padding=ft.Padding.symmetric(horizontal=8),
-            content=ft.Container(
-                border_radius=10, ink=True, padding=ft.Padding.symmetric(horizontal=12, vertical=8),
-                on_click=on(self.open_share_dialog),
-                content=ft.Row([
-                    ft.Icon(ft.Icons.MEMORY_ROUNDED, size=18,
-                            color=ft.Colors.GREEN_400 if sharing else ft.Colors.ON_SURFACE_VARIANT),
-                    ft.Column([
-                        ft.Text("Sharing this device" if sharing else "Share this device's hardware", size=13),
-                        ft.Text(self.share_summary(), size=11, color=ft.Colors.ON_SURFACE_VARIANT,
-                                max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                    ], spacing=0, tight=True, expand=True),
-                ], spacing=10),
-            ),
-        )
-        bottom = ft.Container(
-            padding=ft.Padding.only(left=16, right=8, top=4, bottom=12),
-            content=ft.Row([
-                ft.Icon(ft.Icons.LOCK_ROUNDED, size=16, color=ft.Colors.ON_SURFACE_VARIANT),
-                ft.Text(f"{self.machine.name} ({self.machine.host})" if self.machine else "", size=12,
-                        color=ft.Colors.ON_SURFACE_VARIANT, tooltip="Paired, and encrypted",
-                        max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, expand=True),
-                ft.IconButton(ft.Icons.LOGOUT_ROUNDED, icon_size=18, tooltip="Disconnect", on_click=on(self.disconnect)),
-            ], spacing=6),
-        )
-        terminal = ft.Container(
-            padding=ft.Padding.symmetric(horizontal=8),
-            content=ft.Container(
-                border_radius=10, ink=True, padding=ft.Padding.symmetric(horizontal=12, vertical=8),
-                on_click=on(self.open_terminal),
-                content=ft.Row([
-                    ft.Icon(ft.Icons.TERMINAL_ROUNDED, size=18, color=ft.Colors.ON_SURFACE_VARIANT),
-                    ft.Text(f"Terminal on {self.machine.name}" if self.machine else "Terminal", size=13,
-                            expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                ], spacing=10),
-            ),
-        )
-        stick = ft.Container(
-            padding=ft.Padding.symmetric(horizontal=8),
-            content=ft.Container(
-                border_radius=10, ink=True, padding=ft.Padding.symmetric(horizontal=12, vertical=8),
-                on_click=on(self.open_stick_dialog),
-                content=ft.Row([
-                    ft.Icon(ft.Icons.USB_ROUNDED, size=18, color=ft.Colors.ON_SURFACE_VARIANT),
-                    ft.Text("Make an install stick", size=13, expand=True),
-                ], spacing=10),
-            ),
-        )
-        updates = ft.Container(
-            padding=ft.Padding.symmetric(horizontal=8),
-            content=ft.Container(
-                border_radius=10, ink=True, padding=ft.Padding.symmetric(horizontal=12, vertical=8),
-                on_click=lambda _: self.page.run_task(self.check_for_update, False),
-                content=ft.Row([
-                    ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED, size=18, color=ft.Colors.ON_SURFACE_VARIANT),
-                    ft.Text(f"App updates ({VERSION})", size=13, expand=True),
-                ], spacing=10),
-            ),
-        )
-        # The copy that comes with NanoBorealis is updated with the OS, not by itself.
-        with_os = os.path.abspath(__file__).startswith("/usr/")
-        return ft.Column(expand=True, spacing=6,
-                         controls=[*top, *([chat_list] if chat_list else []), ft.Divider(height=1), terminal, share,
-                                   stick, *([] if with_os else [updates]), bottom])
 
-    def welcome_view(self) -> ft.Control:
-        chips = [
-            ft.Container(
-                content=ft.Text(label, size=13), padding=ft.Padding.symmetric(horizontal=14, vertical=10),
-                border_radius=12, border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT), ink=True,
-                on_click=on(self.send_text, prompt),
-            )
-            for label, prompt in SUGGESTIONS
-        ]
-        return ft.Container(
-            expand=True, alignment=ft.Alignment.CENTER, padding=24,
-            content=ft.Column(tight=True, spacing=16, horizontal_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                logo(56),
-                ft.Text("What should we work on?", size=24, weight=ft.FontWeight.W_500, text_align=ft.TextAlign.CENTER),
-                ft.Text("Your agent runs on your NanoBorealis machine. It can write, run, and fix code there.",
-                        size=14, color=ft.Colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER),
-                ft.Row(chips, wrap=True, spacing=8, run_spacing=8, alignment=ft.MainAxisAlignment.CENTER),
-            ]),
-        )
 
-    async def on_resize(self, event: ft.PageResizeEvent) -> None:
-        if self.in_chat_view:
-            self.apply_layout()
-        elif getattr(self, "connect_card", None) is not None:
-            self.connect_card.width = self.card_width()
-        self.page.update()
 
-    def apply_layout(self) -> None:
-        width = self.page.width or 1100
-        narrow = width < NARROW
-        self.sidebar.visible = not narrow
-        self.side_divider.visible = not narrow
-        self.menu_button.visible = narrow
-        room = width - (0 if narrow else 281)
-        side = max(14, (room - READABLE) / 2)
-        self.messages.padding = ft.Padding.only(left=side, right=side, top=12, bottom=12)
-        self.footer.padding = ft.Padding.only(left=side, right=side, top=4, bottom=14)
 
-    async def open_drawer(self, _event=None) -> None:
-        self.render_chat_list()
-        await self.page.show_drawer()
 
-    def chat_row(self, chat: dict[str, Any]) -> ft.Control:
-        selected = chat["chat_id"] == self.chat_id
-        title = (chat.get("title") or chat.get("preview") or "Untitled chat").strip().splitlines()[0]
-        return ft.Container(
-            content=ft.Row([
-                ft.Text(title, size=14, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, expand=True),
-                ft.Text(short_time(chat.get("updated_at")), size=11, color=ft.Colors.ON_SURFACE_VARIANT),
-            ], spacing=8),
-            padding=ft.Padding.symmetric(horizontal=12, vertical=10),
-            border_radius=10,
-            bgcolor=ft.Colors.SECONDARY_CONTAINER if selected else None,
-            ink=True,
-            on_click=on(self.open_chat, chat["chat_id"]),
-        )
 
-    def render_chat_list(self) -> None:
-        if not self.in_chat_view:
-            return
-        rows = [self.chat_row(c) for c in self.chats]
-        empty = ft.Container(ft.Text("No chats yet", size=13, color=ft.Colors.ON_SURFACE_VARIANT),
-                             padding=ft.Padding.only(left=12, top=6))
-        self.chat_list.controls = rows or [empty]
-        # The drawer already scrolls, so it takes the rows directly rather than a nested list.
-        drawer_side = self.sidebar_column(None)
-        drawer_side.expand = False
-        drawer_side.controls[3:3] = [ft.Container(r, padding=ft.Padding.symmetric(horizontal=8)) for r in rows] or [empty]
-        self.drawer.controls = [drawer_side]
-        for chat in self.chats:
-            if chat["chat_id"] == self.chat_id and (chat.get("title") or chat.get("preview")):
-                self.title_text.value = (chat.get("title") or chat.get("preview")).strip().splitlines()[0]
 
-    async def refresh_chats(self) -> None:
-        if self.link is None:
-            return
-        try:
-            self.chats = await self.link.list_chats()
-        except (LinkError, AuthError):
-            return
-        self.render_chat_list()
-        self.page.update()
 
-    async def refresh_chats_soon(self) -> None:
-        if self.refresh_pending:
-            return
-        self.refresh_pending = True
-        await asyncio.sleep(0.8)
-        self.refresh_pending = False
-        await self.refresh_chats()
 
-    async def open_chat(self, chat_id: str | None) -> None:
-        if self.page.width and self.page.width < NARROW:
-            await self.page.close_drawer()
-        self.chat_id = chat_id
-        self.reset_turn()
-        self.set_busy(False)
-        self.messages.controls.clear()
-        self.welcome.visible = chat_id is None
-        self.title_text.value = "New chat"
-        if chat_id is None:
-            if self.link is not None:
-                self.link.chat_id = None
-            self.render_chat_list()
-            self.page.update()
-            return
-        self.render_chat_list()
-        self.page.update()
-        if self.link is None:
-            return
-        thread: dict[str, Any] | None = None
-        for attempt in range(3):  # right after the agent restarts, the first try can time out
-            try:
-                await self.link.attach(chat_id)
-                thread = await self.link.load_thread(chat_id)
-                break
-            except (LinkError, AuthError, asyncio.TimeoutError) as e:
-                if attempt == 2 or isinstance(e, AuthError):
-                    self.add(self.error_row(f"Could not open this chat: {str(e) or type(e).__name__}"))
-                    break
-                await asyncio.sleep(2)
-        if thread is not None:
-            if self.chat_id != chat_id:
-                return  # the user moved on while this loaded
-            self.render_history(thread.get("messages") or [])
-            if thread.get("active_turn_id"):
-                self.set_busy(True)
-        self.page.update()
-        self.scroll_to_end()
-
-    def render_history(self, messages: list[dict[str, Any]]) -> None:
-        for m in messages:
-            role = m.get("role")
-            content = m.get("content")
-            text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
-            if role == "user":
-                self.messages.controls.append(self.user_bubble(text))
-            elif role == "assistant":
-                if isinstance(m.get("reasoning"), str) and m["reasoning"].strip():
-                    tile, _title, _body = self.reasoning_view(m["reasoning"], "Thought process")
-                    self.messages.controls.append(tile)
-                if text.strip():
-                    view, _md = self.answer_view(text)
-                    self.messages.controls.append(view)
-            elif role == "tool":
-                events = [e for e in (m.get("toolEvents") or []) if isinstance(e, dict)]
-                edits = [e for e in (m.get("fileEdits") or []) if isinstance(e, dict) and e.get("path")]
-                if not events and edits:  # file writes are recorded as edits, not tool events
-                    for edit in edits:
-                        verb = "write" if edit.get("tool") == "write_file" else "edit"
-                        row = ToolRow(f"{verb} {edit['path']}")
-                        row.finish(f"{edit.get('status') or 'done'}: {edit['path']}", edit.get("status") == "error")
-                        self.messages.controls.append(row.tile)
-                    continue
-                for event in events or [None]:
-                    row = ToolRow(tool_title("" if event else text, event))
-                    result = (event or {}).get("error") or (event or {}).get("result") or ""
-                    row.finish(result if isinstance(result, str) else json.dumps(result), bool((event or {}).get("error")))
-                    self.messages.controls.append(row.tile)
 
     # -- Message views -----------------------------------------------------------
 
-    def user_bubble(self, text: str) -> ft.Control:
-        return ft.Column(horizontal_alignment=ft.CrossAxisAlignment.END, controls=[
-            ft.Container(
-                content=ft.Text(text, size=15, selectable=True),
-                bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, border_radius=18,
-                padding=ft.Padding.symmetric(horizontal=16, vertical=10), margin=ft.Margin.only(left=56),
-            ),
-        ])
 
-    def answer_view(self, text: str) -> tuple[ft.Control, ft.Markdown]:
-        md = ft.Markdown(text, selectable=True, extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                         code_theme=ft.MarkdownCodeTheme.ATOM_ONE_DARK, auto_follow_links=True,
-                         code_style_sheet=ft.MarkdownStyleSheet(
-                             code_text_style=ft.TextStyle(font_family=MONO, size=13, height=1.5),
-                             codeblock_padding=ft.Padding.symmetric(horizontal=16, vertical=14),
-                             codeblock_decoration=ft.BoxDecoration(border_radius=10)),
-                         md_style_sheet=ft.MarkdownStyleSheet(
-                             code_text_style=ft.TextStyle(font_family=MONO, size=13)))
-        copy = ft.IconButton(ft.Icons.CONTENT_COPY_ROUNDED, icon_size=16, tooltip="Copy",
-                             icon_color=ft.Colors.ON_SURFACE_VARIANT, on_click=on(self.copy_markdown, md))
-        return ft.Column([md, ft.Row([copy], spacing=0)], spacing=0), md
 
-    def reasoning_view(self, text: str, title: str) -> tuple[ft.Control, ft.Text, ft.Text]:
-        title_text = ft.Text(title, size=13, color=ft.Colors.ON_SURFACE_VARIANT)
-        body = ft.Text(text, size=13, italic=True, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True)
-        tile = ft.ExpansionTile(
-            title=title_text,
-            leading=ft.Icon(ft.Icons.PSYCHOLOGY_OUTLINED, size=18, color=ft.Colors.ON_SURFACE_VARIANT),
-            controls=[ft.Container(body, padding=ft.Padding.only(left=16, right=16, bottom=12))],
-            expanded_cross_axis_alignment=ft.CrossAxisAlignment.STRETCH,
-            dense=True, maintain_state=True, tile_padding=ft.Padding.symmetric(horizontal=8),
-            shape=ft.RoundedRectangleBorder(radius=12), collapsed_shape=ft.RoundedRectangleBorder(radius=12),
-        )
-        return tile, title_text, body
 
-    def note_row(self, text: str, icon: ft.IconData = ft.Icons.INFO_OUTLINE_ROUNDED) -> ft.Control:
-        return ft.Row([ft.Icon(icon, size=16, color=ft.Colors.ON_SURFACE_VARIANT),
-                       ft.Text(text, size=13, color=ft.Colors.ON_SURFACE_VARIANT, expand=True, selectable=True)],
-                      spacing=8)
 
-    def error_row(self, text: str) -> ft.Control:
-        return ft.Container(
-            bgcolor=ft.Colors.ERROR_CONTAINER, border_radius=10, padding=ft.Padding.symmetric(horizontal=12, vertical=8),
-            content=ft.Row([ft.Icon(ft.Icons.ERROR_OUTLINE_ROUNDED, size=16, color=ft.Colors.ON_ERROR_CONTAINER),
-                            ft.Text(text, size=13, color=ft.Colors.ON_ERROR_CONTAINER, expand=True, selectable=True)],
-                           spacing=8),
-        )
 
-    def add(self, control: ft.Control) -> None:
-        self.welcome.visible = False
-        self.messages.controls.append(control)
-        self.page.update()
-        self.scroll_to_end()
 
-    def scroll_to_end(self) -> None:
-        """Follow the conversation as it grows (ListView.auto_scroll stops once the list moves)."""
-        if self.scroll_task is not None and not self.scroll_task.done():
-            return
 
-        async def scroll() -> None:
-            await asyncio.sleep(0.05)  # let the new content lay out first
-            try:
-                await self.messages.scroll_to(offset=-1, duration=200)
-            except Exception:
-                pass  # the chat view was replaced meanwhile
-
-        self.scroll_task = asyncio.ensure_future(scroll())
-
-    async def copy_markdown(self, md: ft.Markdown) -> None:
-        await self.clipboard.set(md.value or "")
-        self.page.show_dialog(ft.SnackBar(ft.Text("Copied"), duration=1500))
 
     # -- Streaming ---------------------------------------------------------------
 
-    def reset_turn(self) -> None:
-        self.reasoning = None
-        self.answers = {}
-        self.tools = {}
-        self.last_answer = ""
 
-    def mark_dirty(self, control: ft.Control) -> None:
-        self.dirty[id(control)] = control
-        if self.flush_task is None or self.flush_task.done():
-            self.flush_task = asyncio.ensure_future(self.flush_soon())
 
-    async def flush_soon(self) -> None:
-        await asyncio.sleep(0.05)  # batch streamed text into ~20 redraws a second
-        controls = list(self.dirty.values())
-        self.dirty.clear()
-        for control in controls:
-            try:
-                control.update()
-            except Exception:
-                pass  # the chat was switched away; nothing to redraw
-        if self.busy:
-            self.scroll_to_end()
 
-    def set_busy(self, busy: bool) -> None:
-        self.busy = busy
-        if not self.in_chat_view:
-            return
-        self.progress.visible = busy
-        self.send_button.visible = not busy
-        self.stop_button.visible = busy
 
-    def close_reasoning(self) -> None:
-        if self.reasoning is not None:
-            title, _body, started = self.reasoning
-            title.value = f"Thought for {max(1, round(time.monotonic() - started))}s"
-            self.mark_dirty(title)
-            self.reasoning = None
 
-    async def on_event(self, event: dict[str, Any]) -> None:
-        name = event["event"]
-        if not self.in_chat_view:
-            return
-        if name == "link_up":
-            await self.on_link_up()
-            return
-        if name == "link_down":
-            self.status_dot.bgcolor = ft.Colors.AMBER
-            self.status_dot.tooltip = "Reconnecting"
-            self.banner_text.value = f"Connection lost. Retrying in {event.get('retry_in', 1):.0f}s. {event.get('detail', '')}"
-            self.banner.visible = True
-            self.page.update()
-            return
-        if name in ("session_updated", "turn_end"):
-            self.page.run_task(self.refresh_chats_soon)
-        if name == "runtime_model_updated":
-            self.set_model(event.get("model_name"))
-            return
-        if event.get("chat_id") != self.chat_id or self.chat_id is None:
-            return
 
-        if name == "turn_model_updated":
-            label = event.get("model_name")
-            if event.get("fallback") and label:
-                label = f"{label} (fallback)"
-            self.set_model(label)
-        elif name == "goal_status" and event.get("status") == "running":
-            self.set_busy(True)
-            self.page.update()
-        elif name == "retry_status":
-            if event.get("state") not in (None, "cleared"):
-                self.add(self.note_row(f"The model had a problem; retrying (attempt {event.get('attempt')}).",
-                                       ft.Icons.REFRESH_ROUNDED))
-        elif name == "reasoning_delta":
-            if self.reasoning is None:
-                tile, title, body = self.reasoning_view("", "Thinking...")
-                self.reasoning = (title, body, time.monotonic())
-                self.add(tile)
-            _title, body, _started = self.reasoning
-            body.value = (body.value or "") + str(event.get("text") or "")
-            self.mark_dirty(body)
-        elif name == "reasoning_end":
-            self.close_reasoning()
-        elif name == "delta":
-            self.close_reasoning()
-            key = str(event.get("stream_id") or "")
-            if key not in self.answers:
-                view, md = self.answer_view("")
-                self.answers[key] = (md, [])
-                self.add(view)
-            md, parts = self.answers[key]
-            parts.append(str(event.get("text") or ""))
-            md.value = "".join(parts)
-            self.mark_dirty(md)
-        elif name == "stream_end":
-            key = str(event.get("stream_id") or "")
-            if key in self.answers:
-                md, parts = self.answers.pop(key)
-                if isinstance(event.get("text"), str):
-                    md.value = event["text"]
-                self.last_answer = md.value or ""
-                self.mark_dirty(md)
-        elif name == "message":
-            self.close_reasoning()
-            self.on_agent_message(event)
-        elif name == "user_message":
-            self.add(self.user_bubble(str(event.get("text") or "")))
-        elif name == "turn_end":
-            self.close_reasoning()
-            self.set_busy(False)
-            latency = event.get("latency_ms")
-            if isinstance(latency, (int, float)):
-                self.add(ft.Text(f"{latency / 1000:.1f}s", size=11, color=ft.Colors.ON_SURFACE_VARIANT))
-            self.reset_turn()
-            self.page.update()
-        elif name == "error":
-            detail = str(event.get("detail") or "error")
-            if event.get("reason"):
-                detail = f"{detail}: {event['reason']}"
-            self.add(self.error_row(detail))
-            if detail.startswith(("message_rejected", "access_denied", "missing content", "attachment_rejected")):
-                self.set_busy(False)
-                self.page.update()
 
-    def on_agent_message(self, event: dict[str, Any]) -> None:
-        text = str(event.get("text") or "")
-        kind = event.get("kind")
-        tool_events = [e for e in (event.get("tool_events") or []) if isinstance(e, dict)]
-        if kind in ("tool_hint", "progress") or tool_events:
-            for tool_event in tool_events:
-                call_id = str(tool_event.get("call_id") or len(self.tools))
-                row = self.tools.get(call_id)
-                if row is None:
-                    row = ToolRow(tool_title(text, tool_event))
-                    self.tools[call_id] = row
-                    self.add(row.tile)
-                if tool_event.get("phase") == "end":
-                    result = tool_event.get("error") or tool_event.get("result") or ""
-                    row.finish(result if isinstance(result, str) else json.dumps(result), bool(tool_event.get("error")))
-                    self.page.update()
-            if not tool_events and text.strip():
-                self.add(self.note_row(text, ft.Icons.TERMINAL_ROUNDED))
-            return
-        if not text.strip() or text.strip() == self.last_answer.strip():
-            return  # already shown by the stream
-        view, _md = self.answer_view(text)
-        self.last_answer = text
-        self.add(view)
 
-    def set_model(self, name: Any) -> None:
-        if isinstance(name, str) and name.strip():
-            full = name.strip()
-            # "nvidia/nemotron-3-ultra-550b-a55b:free" shows as "nemotron-3-ultra-550b-a55b", which
-            # leaves the chat title room on a phone; the tooltip keeps the whole name.
-            self.model_text.value = full.rsplit("/", 1)[-1].split(":", 1)[0] or full
-            self.model_chip.tooltip = full
-            self.model_chip.visible = True
-            self.page.update()
 
-    async def on_link_up(self) -> None:
-        self.status_dot.bgcolor = ft.Colors.GREEN_400
-        self.status_dot.tooltip = f"Connected to {self.machine.name if self.machine else ''}, encrypted"
-        self.banner.visible = False
-        if self.link is not None:
-            self.set_model(self.link.model_name)
-        self.page.update()
-        reconnect = self.was_up
-        self.was_up = True
-        await self.refresh_chats()
-        if reconnect and self.chat_id:
-            await self.open_chat(self.chat_id)  # catch up on anything missed while offline
-        if not reconnect and self.link is not None:
-            self.page.run_task(self.keep_chats_fresh, self.link)
-
-    async def keep_chats_fresh(self, link: AgentLink) -> None:
-        """Chats live on the NanoBorealis machine; ones started on another device show up here too."""
-        while self.link is link and self.in_chat_view:
-            await asyncio.sleep(20)
-            if self.link is link and link.connected:
-                await self.refresh_chats()
 
     # -- Compute sharing -----------------------------------------------------------
 
@@ -1241,11 +643,6 @@ class NanoBorealisApp:
             return "Paused. Open to resume."
         return "Let the agent use this GPU, CPU and RAM"
 
-    def refresh_sidebar(self) -> None:
-        if self.in_chat_view:
-            self.sidebar.content = self.sidebar_column(self.chat_list)
-            self.render_chat_list()  # rebuilds the drawer's copy too
-            self.page.update()
 
     async def load_share(self) -> None:
         raw = await self.pref_get(PREF_COMPUTE)
@@ -1463,93 +860,11 @@ class NanoBorealisApp:
     # A console on the paired computer, as the person who approved this device at its screen
     # (terminal.py): the app is that computer's remote control, not just the agent's chat.
 
-    async def open_terminal(self) -> None:
-        if self.machine is None:
-            return
-        if self.in_chat_view and self.page.width and self.page.width < NARROW:
-            await self.page.close_drawer()
-        self.terminal_raw = ""
-        self.terminal_output = ft.Text("Connecting...", font_family=MONO, size=12.5, selectable=True)
-        self.terminal_input = ft.TextField(
-            hint_text="Type a command, then Enter", text_style=ft.TextStyle(font_family=MONO, size=13),
-            on_submit=self.terminal_submit, expand=True, dense=True, autofocus=True,
-        )
-        keys = ft.Row(wrap=True, spacing=6, controls=[
-            ft.OutlinedButton(label, tooltip=tip, on_click=on(self.terminal_key, sequence))
-            for label, sequence, tip in TERMINAL_KEYS
-        ])
-        # Everything has to fit in the dialog: Flutter still draws what overflows it, but taps on
-        # that part never arrive.
-        width = min(920, max(300, (self.page.width or 920) - 48))
-        height = min(520, max(160, (self.page.height or 760) - 400))
-        self.terminal_dialog = ft.AlertDialog(
-            modal=True,
-            scrollable=True,
-            title=ft.Row([ft.Icon(ft.Icons.TERMINAL_ROUNDED),
-                          ft.Text(f"Terminal on {self.machine.name}", size=18, weight=ft.FontWeight.W_600,
-                                  expand=True)], spacing=10),
-            content=ft.Container(width=width, content=ft.Column(tight=True, spacing=10, controls=[
-                ft.Container(ft.ListView([self.terminal_output], auto_scroll=True, padding=12), height=height,
-                             bgcolor=ft.Colors.SURFACE_CONTAINER_LOWEST, border_radius=10),
-                ft.Row([self.terminal_input,
-                        ft.IconButton(ft.Icons.PASSWORD_ROUNDED, tooltip="Hide what you type (for passwords)",
-                                      on_click=on(self.toggle_terminal_hidden))], spacing=4),
-                keys,
-            ])),
-            actions=[ft.TextButton("Close", on_click=on(self.close_terminal))],
-        )
-        self.page.show_dialog(self.terminal_dialog)
-        term = Terminal(self.machine, rows=40, cols=120, console=True)
-        try:
-            await term.open()
-        except pairing.PairingError as e:
-            self.terminal_output.value = str(e)
-            self.page.update()
-            return
-        self.terminal = term
-        self.terminal_output.value = ""
-        self.page.update()
-        self.page.run_task(self.pump_terminal, term)
 
-    async def pump_terminal(self, term: Terminal) -> None:
-        while chunk := await term.read():
-            self.terminal_raw = (self.terminal_raw + chunk.decode(errors="replace"))[-200_000:]
-            self.terminal_output.value = plain(self.terminal_raw)
-            self.page.update()
-        if self.terminal is term:
-            self.terminal = None
-            ended = f" with status {term.exit_status}" if term.exit_status is not None else ""
-            self.terminal_output.value = plain(self.terminal_raw) + f"\n[The shell ended{ended}. Open the terminal again for a new one.]"
-            self.page.update()
 
-    async def terminal_submit(self, _event=None) -> None:
-        text = self.terminal_input.value or ""
-        self.terminal_input.value = ""
-        self.terminal_input.password = False
-        self.page.update()
-        if self.terminal is not None:
-            await self.terminal.send(text + "\r")
-        await self.terminal_input.focus()
 
-    async def terminal_key(self, sequence: str) -> None:
-        if self.terminal is None:
-            return
-        typed = self.terminal_input.value or ""  # e.g. Tab completes what's been typed so far
-        self.terminal_input.value = ""
-        self.page.update()
-        await self.terminal.send(typed + sequence)
-        await self.terminal_input.focus()
 
-    async def toggle_terminal_hidden(self) -> None:
-        self.terminal_input.password = not self.terminal_input.password
-        self.page.update()
-        await self.terminal_input.focus()
 
-    async def close_terminal(self) -> None:
-        term, self.terminal = self.terminal, None
-        if term is not None:
-            term.close()
-        self.page.pop_dialog()
 
     async def open_stick_dialog(self) -> None:
         if self.in_chat_view and self.page.width and self.page.width < NARROW:
@@ -1750,53 +1065,8 @@ class NanoBorealisApp:
 
     # -- Sending -----------------------------------------------------------------
 
-    async def send_text(self, text: str) -> None:
-        self.composer.value = text
-        await self.on_send()
 
-    async def on_send(self, _event=None) -> None:
-        text = (self.composer.value or "").strip()
-        if not text or self.busy:
-            return
-        if self.link is None or not self.link.connected:
-            self.add(self.error_row("Not connected to the agent yet."))
-            return
-        self.composer.value = ""
-        self.page.update()
-        if self.chat_id is None:
-            try:
-                self.chat_id = await self.link.new_chat()
-            except (LinkError, asyncio.TimeoutError) as e:
-                self.composer.value = text
-                self.add(self.error_row(f"Could not start a chat: {e}"))
-                return
-            self.title_text.value = text.splitlines()[0][:80]
-        self.reset_turn()
-        self.add(self.user_bubble(text))
-        self.set_busy(True)
-        self.page.update()
-        try:
-            await self.link.send_message(self.chat_id, text)
-        except LinkError as e:
-            self.add(self.error_row(str(e)))
-            self.set_busy(False)
-            self.page.update()
-        await self.composer.focus()
 
-    async def on_stop(self, _event=None) -> None:
-        if self.link is None or self.chat_id is None:
-            return
-        try:
-            await self.link.stop_turn(self.chat_id)
-        except LinkError as e:
-            self.add(self.error_row(str(e)))
-            return
-        # nanobot answers /stop with a short message but never sends turn_end for the
-        # cancelled turn, so the turn is over as far as this window is concerned.
-        self.close_reasoning()
-        self.reset_turn()
-        self.set_busy(False)
-        self.page.update()
 
 
 async def main(page: ft.Page) -> None:
@@ -1807,6 +1077,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "write":
         # The packaged app relaunching itself, elevated, to write an install stick.
         sys.exit(stickmaker._cli(sys.argv[1:]))
+    if host.is_host() and not host.claim_single_instance():
+        sys.exit(0)  # already open: its window was brought forward instead
     # Under pythonw (no console) these are None, and Flet writes download progress to them.
     if sys.stdout is None:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")

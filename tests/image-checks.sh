@@ -93,6 +93,10 @@ import json, sys
 config = json.load(open("/usr/share/nanoborealis/image/seed/config.json"))
 models = [p["model"] for p in config["modelPresets"].values()] + [config["agents"]["defaults"]["model"]]
 sys.exit(0 if models and all(m.endswith(":free") for m in models) else 1)'
+expect "...and has OpenRouter refuse anything that costs money" python3 -c '
+import json, sys
+limit = json.load(open("/usr/share/nanoborealis/image/seed/config.json"))["providers"]["openrouter"]["extraBody"]["provider"]["max_price"]
+sys.exit(0 if limit.get("prompt") == 0 and limit.get("completion") == 0 else 1)'
 expect "Wi-Fi repair after sleep enabled" systemctl is-enabled nanoborealis-wifi-resume.service
 expect "Wi-Fi repair script parses" bash -n /usr/libexec/nanoborealis-wifi-resume
 expect "Realtek Wi-Fi is kept out of sleep (unloaded before, loaded after, S3 where offered)" \
