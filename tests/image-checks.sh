@@ -55,6 +55,10 @@ expect "the app's launcher is executable" test -x /usr/bin/nanoborealis-app
 expect "the app's Python environment loads it" \
     env -C /usr/lib/nanoborealis-app/src /usr/lib/nanoborealis-app/venv/bin/python3 -c 'import main, pairing, terminal'
 expect "Flet's window program is in place" test -x /usr/lib/nanoborealis-app/client/flet/flet
+expect "the app's window is a KDE window (title bar, dock icon)" \
+    grep -q gtk_window_set_titlebar /usr/lib/nanoborealis-app/libnanoborealis-window.so
+expect "...and that fix loads into the app's Python" \
+    env LD_PRELOAD=/usr/lib/nanoborealis-app/libnanoborealis-window.so /usr/lib/nanoborealis-app/venv/bin/python3 -c pass
 missing="$(ldd /usr/lib/nanoborealis-app/client/flet/flet 2>&1 | grep 'not found' | sort -u)"
 [ -z "$missing" ] && pass "Flet's window program finds all its libraries" \
     || flunk "Flet's window program misses libraries: $(echo $missing)"
@@ -82,8 +86,18 @@ rm -rf "$units"
 # Services and update policy.
 expect "network guard enabled" systemctl is-enabled nanoborealis-firewall.service
 expect "migration enabled" systemctl is-enabled nanoborealis-migrate.service
+# Every model the agent starts with is a free one, the hidden "default" preset included (nanobot
+# makes it from agents.defaults.model, which is a billed Claude model when left out).
+expect "the agent's seed config names only free models" python3 -c '
+import json, sys
+config = json.load(open("/usr/share/nanoborealis/image/seed/config.json"))
+models = [p["model"] for p in config["modelPresets"].values()] + [config["agents"]["defaults"]["model"]]
+sys.exit(0 if models and all(m.endswith(":free") for m in models) else 1)'
 expect "Wi-Fi repair after sleep enabled" systemctl is-enabled nanoborealis-wifi-resume.service
 expect "Wi-Fi repair script parses" bash -n /usr/libexec/nanoborealis-wifi-resume
+expect "Realtek Wi-Fi is kept out of sleep (unloaded before, loaded after, S3 where offered)" \
+    sh -n /usr/lib/systemd/system-sleep/nanoborealis-wifi
+expect "...and that sleep hook is executable" test -x /usr/lib/systemd/system-sleep/nanoborealis-wifi
 expect "Realtek rtw89 Wi-Fi stays out of the power states it can't wake from" \
     grep -q "^options rtw89_pci disable_clkreq=y" /usr/lib/modprobe.d/nanoborealis-wifi.conf
 for timer in uupd.timer bootc-fetch-apply-updates.timer rpm-ostreed-automatic.timer; do

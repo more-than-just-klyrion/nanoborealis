@@ -27,28 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from agent_link import AgentLink, AuthError  # noqa: E402
 from pairing import Machine, Pairing, PairingError, WrongPin, split_address, unpair  # noqa: E402
-
-
-def check(ok: bool, what: str) -> None:
-    print(("ok   " if ok else "FAIL ") + what, flush=True)
-    if not ok:
-        raise SystemExit(1)
-
-
-def read_pin(path: str, after: float) -> str:
-    for _ in range(100):
-        if os.path.exists(path) and os.path.getmtime(path) >= after:
-            return open(path).read().strip()
-        time.sleep(0.1)
-    raise SystemExit("FAIL the PIN never appeared")
-
-
-def pair(host: str, port: int, pin_file: str, name: str) -> Machine:
-    session = Pairing(host, port, name)
-    session.start()
-    asked = time.time() - 1
-    session.reveal()
-    return session.finish(read_pin(pin_file, asked))
+from checks import check, pair, read_pin  # noqa: E402,F401  (terminal_check imports them from here)
 
 
 def other_certificate() -> str:

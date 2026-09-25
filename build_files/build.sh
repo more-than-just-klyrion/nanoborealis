@@ -15,6 +15,7 @@ chmod 0755 /usr/libexec/nanoborealis-firstrun \
            /usr/libexec/nanoborealis-setup-from-stick \
            /usr/libexec/nanoborealis-relay \
            /usr/libexec/nanoborealis-wifi-resume \
+           /usr/lib/systemd/system-sleep/nanoborealis-wifi \
            /usr/share/nanoborealis/install.sh \
            /usr/share/nanoborealis/nanoborealis \
            /usr/share/nanoborealis/image/entrypoint.sh
@@ -51,6 +52,10 @@ test -x "$app/client/flet/flet"
 # (libgtk-3.so.0 and the like), so this stays right as Flet or Aurora change.
 needs="$(ldd "$app/client/flet/flet" | awk '/not found/ {print $1 "()(64bit)"}' | sort -u)"
 [ -z "$needs" ] || dnf5 install -y $needs
+# And a proper KDE window: KWin's own title bar instead of Flet's GNOME-style one, and the app's
+# own name and icon in the dock instead of Flet's (nanoborealis-window.c; the launcher loads it).
+command -v gcc >/dev/null || dnf5 install -y gcc
+gcc -O2 -Wall -shared -fPIC -nostdlib -o "$app/libnanoborealis-window.so" /ctx/nanoborealis-window.c
 "$app/venv/bin/python3" -m compileall -q "$app/src" "$app/venv/lib" >/dev/null || true
 
 # Updates are opt-in: machines only move to a newer build when their owner runs

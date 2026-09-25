@@ -48,6 +48,37 @@ if [ ! -e "$clock_marker" ]; then
     mkdir -p /var/lib/nanoborealis && touch "$clock_marker"
 fi
 
+# The agent's hidden "default" model. nanobot always offers a model preset named "default", made
+# from agents.defaults.model, and that is Claude Opus, which is billed, unless the config says
+# otherwise; configs from before September 25, 2026 didn't. Point it at the free Nemotron Ultra,
+# once, as the agent's own account, and only if no default model was ever chosen.
+model_marker=/var/lib/nanoborealis/free-default-model
+if [ ! -e "$model_marker" ] && agent_home="$(getent passwd "$AGENT_USER" | cut -d: -f6)" && [ -n "$agent_home" ]; then
+    config="$agent_home/.local/share/containers/storage/volumes/nanobot-home/_data/.nanobot/config.json"
+    if runuser -u "$AGENT_USER" -- test -f "$config"; then
+        if runuser -u "$AGENT_USER" -- python3 - "$config" <<'EOF'
+import json, os, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    config = json.load(f)
+defaults = config.setdefault("agents", {}).setdefault("defaults", {})
+if defaults.get("model"):
+    sys.exit(1)  # chosen already: leave it alone
+defaults["model"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
+defaults["provider"] = "openrouter"
+temporary = path + ".nanoborealis-tmp"
+with open(temporary, "w", encoding="utf-8") as f:
+    f.write(json.dumps(config, indent=2) + "\n")
+os.chmod(temporary, os.stat(path).st_mode & 0o777)
+os.replace(temporary, path)
+EOF
+        then
+            log "the agent's default model is the free Nemotron Ultra now (it was a billed one)"
+        fi
+        mkdir -p /var/lib/nanoborealis && touch "$model_marker"
+    fi
+fi
+
 # Devices approved for compute sharing.
 if [ -d /etc/nanoaurora ] && [ ! -e /etc/nanoborealis ]; then
     mv /etc/nanoaurora /etc/nanoborealis && log "moved /etc/nanoaurora to /etc/nanoborealis"

@@ -531,7 +531,7 @@ async def open_terminal(target: str, reader: asyncio.StreamReader, writer: async
 # -- HTTP ---------------------------------------------------------------------------------------
 
 REASONS = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
-           409: "Conflict", 429: "Too Many Requests", 502: "Bad Gateway"}
+           409: "Conflict", 429: "Too Many Requests", 500: "Internal Server Error", 502: "Bad Gateway"}
 
 
 def header(headers: list[tuple[str, str]], name: str) -> str:
@@ -568,8 +568,10 @@ async def local(method: str, target: str, headers: list[tuple[str, str]], reader
     """This service's own endpoints: pairing, unpairing, and a paired device's terminal and commands."""
     path = target.split("?", 1)[0]
     if method == "GET" and path == "/nanoborealis/hello":
-        return await reply(writer, 200, {"service": "nanoborealis-remote", "pairing": 1, "terminal": 1,
+        return await reply(writer, 200, {"service": "nanoborealis-remote", "pairing": 1, "terminal": 1, "admin": 1,
                                          "machine": MACHINE})
+    if (method, path) in ADMIN_ROUTES:
+        return await admin(method, target, headers, reader, writer, address)
     owner = None
     if path in ("/nanoborealis/terminal", "/nanoborealis/command"):
         device_id = devices.find(header(headers, DEVICE_HEADER))
@@ -696,6 +698,315 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             writer.close()
         except (OSError, RuntimeError, ssl.SSLError):
             pass
+
+
+# -- Managing the agent -------------------------------------------------------------------------
+# The app's control center: an administrator's paired devices manage the agent from it. Most of it
+# (models, channels, skills, schedules) goes through nanobot's own WebUI settings; this is what
+# nanobot can't do for itself: its container's state, logs and restarts, its OpenRouter key (a
+# Podman secret) and what that key has spent, its memory files, and this computer's paired
+# devices. Everything that touches the agent's files runs as the agent's own account, never as
+# root: the agent may have put anything in its home, links to system files included.
+
+TEST_AGENT_HOME = os.environ.get("NANOBOREALIS_REMOTE_TEST_AGENT_HOME")  # tests: a folder as the agent's home
+ADMIN_BODY_LIMIT = 512 * 1024
+AGENT_UNIT = "nanobot.service"
+WORKSPACE = ".nanobot/workspace"
+KEY_SECRET = "openrouter_api_key"
+
+# Run as the agent: file work in its home, confined to it by the agent's own permissions as well.
+AGENT_FILES = r"""
+import json, os, sys, time
+root, op = os.path.realpath(sys.argv[1]), sys.argv[2]
+path = os.path.realpath(os.path.join(root, sys.argv[3])) if len(sys.argv) > 3 else root
+if path != root and not path.startswith(root + os.sep):
+    sys.exit("outside the agent's home")
+if op == "read":
+    with open(path, encoding="utf-8", errors="replace") as f:
+        sys.stdout.write(f.read(524288))
+elif op == "write":
+    data = sys.stdin.read()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = path + ".nanoborealis-tmp"
+    with open(temporary, "w", encoding="utf-8") as f:
+        f.write(data)
+    if os.path.exists(path):
+        os.chmod(temporary, os.stat(path).st_mode & 0o777)
+    os.replace(temporary, path)
+elif op == "list":
+    found = []
+    for base, dirs, files in os.walk(path):
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__pycache__")
+        for name in sorted(files):
+            full = os.path.join(base, name)
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            found.append({"path": os.path.relpath(full, root), "size": st.st_size, "modified": int(st.st_mtime)})
+            if len(found) >= 2000:
+                break
+        if len(found) >= 2000 or base.count(os.sep) - path.count(os.sep) >= 4:
+            dirs[:] = []
+    print(json.dumps(found))
+elif op == "delete":
+    os.remove(path)
+"""
+
+
+def agent_run(args: list[str], stdin: str | None = None, timeout: float = 60) -> subprocess.CompletedProcess:
+    """A command as the agent's account (in tests, as this one)."""
+    if TEST_AGENT_HOME is not None:
+        return subprocess.run(args, input=stdin, capture_output=True, text=True, timeout=timeout, cwd="/")
+    import pwd
+    agent = pwd.getpwnam(AGENT_USER)
+    return subprocess.run(
+        ["runuser", "-u", AGENT_USER, "--", "env", f"HOME={agent.pw_dir}", f"XDG_RUNTIME_DIR=/run/user/{agent.pw_uid}",
+         f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{agent.pw_uid}/bus", *args],
+        input=stdin, capture_output=True, text=True, timeout=timeout, cwd="/")
+
+
+_agent_home: str | None = None
+
+
+def agent_home() -> str:
+    """The agent's home inside its container (/home/nanobot), as its Podman volume here."""
+    global _agent_home
+    if TEST_AGENT_HOME is not None:
+        return TEST_AGENT_HOME
+    if _agent_home is None:
+        result = agent_run(["podman", "volume", "inspect", "nanobot-home", "--format", "{{.Mountpoint}}"])
+        if result.returncode != 0 or not result.stdout.strip():
+            raise RuntimeError(f"can't find the agent's home: {result.stderr.strip()[:200]}")
+        _agent_home = result.stdout.strip()
+    return _agent_home
+
+
+def agent_file(op: str, relative: str = "", content: str | None = None) -> str:
+    result = agent_run(["python3", "-c", AGENT_FILES, agent_home(), op, *([relative] if relative else [])],
+                       stdin=content)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip().splitlines()[-1] if result.stderr.strip() else f"{op} failed")
+    return result.stdout
+
+
+def unit_state() -> dict:
+    if TEST_AGENT_HOME is not None:
+        return {"running": True, "state": "active", "since": None}
+    result = subprocess.run(["systemctl", "--user", "-M", f"{AGENT_USER}@", "show", AGENT_UNIT,
+                             "-p", "ActiveState", "-p", "SubState", "-p", "ActiveEnterTimestamp"],
+                            capture_output=True, text=True, timeout=20)
+    props = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    return {"running": props.get("ActiveState") == "active", "state": props.get("SubState") or props.get("ActiveState"),
+            "since": props.get("ActiveEnterTimestamp") or None}
+
+
+def os_release() -> dict:
+    info = {}
+    try:
+        for line in Path("/usr/lib/os-release").read_text().splitlines():
+            key, _, value = line.partition("=")
+            if key in ("PRETTY_NAME", "VERSION", "IMAGE_VERSION", "VERSION_ID"):
+                info[key.lower()] = value.strip().strip('"')
+    except OSError:
+        pass
+    return info
+
+
+async def agent_overview(data: dict, query: dict, owner: str, device_id: str) -> tuple[int, dict]:
+    return 200, {"machine": MACHINE, "os": os_release(), "agent": await asyncio.to_thread(unit_state)}
+
+
+FILE_ROOTS = (WORKSPACE, ".nanobot/cron")
+
+
+def allowed_file(path: object) -> str | None:
+    if not isinstance(path, str) or not path or "\0" in path or path.startswith("/") or ".." in path.split("/"):
+        return None
+    return path if any(path == root or path.startswith(root + "/") for root in FILE_ROOTS) else None
+
+
+async def agent_file_read(data: dict, query: dict, owner: str, device_id: str) -> tuple[int, dict]:
+    path = allowed_file(query.get("path"))
+    if path is None:
+        return 400, {"error": "That file isn't one the app manages."}
+    try:
+        return 200, {"path": path, "content": await asyncio.to_thread(agent_file, "read", path)}
+    except RuntimeError as e:
+        return 404, {"error": str(e)}
+
+
+async def agent_file_list(data: dict, query: dict, owner: str, device_id: str) -> tuple[int, dict]:
+    path = allowed_file(query.get("path") or WORKSPACE)
+    if path is None:
+        return 400, {"error": "That folder isn't one the app manages."}
+    try:
+        return 200, {"path": path, "files": json.loads(await asyncio.to_thread(agent_file, "list", path) or "[]")}
+    except (RuntimeError, ValueError) as e:
+        return 404, {"error": str(e)}
+
+
+async def agent_file_write(data: dict, query: dict, owner: str, device_id: str) -> tuple[int, dict]:
+    path, content = allowed_file(data.get("path")), data.get("content")
+    if path is None or not isinstance(content, str):
+        return 400, {"error": "That file isn't one the app manages."}
+    if data.get("delete"):
+        await asyncio.to_thread(agent_file, "delete", path)
+        log(f"{owner} deleted the agent's {path}")
+        return 200, {"path": path, "deleted": True}
+    await asyncio.to_thread(agent_file, "write", path, content)
+    log(f"{owner} saved the agent's {path}")
+    return 200, {"path": path, "saved": True}
+
+
+async def agent_logs(data: dict, query: dict, owner: str, device_id: str) -> tuple[int, dict]:
+    lines = clamp(query.get("lines") or 300, 300, 5000)
+    if TEST_AGENT_HOME is not None:
+        return 200, {"lines": []}
+    import pwd
+    uid = pwd.getpwnam(AGENT_USER).pw_uid
+    result = await asyncio.to_thread(subprocess.run, ["journalctl", f"_UID={uid}", "-n", str(lines), "--no-pager",
+                                                      "-o", "short-iso", "-q"],
+                                     capture_output=True, text=True, timeout=30)
+    return 200, {"lines": result.stdout.splitlines()[-lines:]}
+
+
+async def restart_agent() -> None:
+    if TEST_AGENT_HOME is not None:
+        return
+    await asyncio.to_thread(subprocess.run, ["systemctl", "--user", "-M", f"{AGENT_USER}@", "restart", AGENT_UNIT],
+                            capture_output=True, timeout=300)
+
+
+async def agent_restart(data: dict, query: dict, owner: str, device_id: str) -> tuple[int, dict]:
+    log(f"{owner} restarted the agent")
+    await restart_agent()
+    return 200, {"agent": await asyncio.to_thread(unit_state)}
+
+
+def openrouter_key() -> str:
+    if TEST_AGENT_HOME is not None:
+        return (Path(TEST_AGENT_HOME) / ".openrouter-key").read_text().strip() if \
+            (Path(TEST_AGENT_HOME) / ".openrouter-key").exists() else ""
+    result = agent_run(["podman", "secret", "inspect", "--showsecret", "--format", "{{.SecretData}}", KEY_SECRET])
+    return result.stdout.strip()
+
+
+_usage: tuple[float, dict] | None = None
+
+
+async def agent_usage(data: dict, query: dict, owner: str, device_id: str) -> tuple[int, dict]:
+    """What the agent's OpenRouter key has spent (OpenRouter's own count). The key never leaves."""
+    global _usage
+    if _usage is not None and time.time() - _usage[0] < 60 and not query.get("fresh"):
+        return 200, _usage[1]
+
+    def fetch() -> dict:
+        import urllib.request
+        key = openrouter_key()
+        if not key:
+            return {"error": "The agent has no OpenRouter key."}
+        request = urllib.request.Request("https://openrouter.ai/api/v1/key",
+                                         headers={"Authorization": f"Bearer {key}", "User-Agent": "NanoBorealis"})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            info = json.loads(response.read()).get("data") or {}
+        keep = ("label", "usage", "usage_daily", "usage_weekly", "usage_monthly", "limit", "limit_remaining",
+                "is_free_tier")
+        return {k: info.get(k) for k in keep}
+
+    try:
+        answer = await asyncio.to_thread(fetch)
+    except Exception as e:  # offline, or OpenRouter turned the key down
+        return 502, {"error": f"OpenRouter didn't answer: {e}"}
+    if "error" not in answer:
+        _usage = (time.time(), answer)
+    return 200, answer
+
+
+async def set_agent_key(data: dict, query: dict, owner: str, device_id: str) -> tuple[int, dict]:
+    """A new OpenRouter key for the agent (typed into the app by its owner). The agent restarts."""
+    global _usage
+    key = data.get("key")
+    if not isinstance(key, str) or not re.fullmatch(r"sk-or-[\w\-]{16,200}", key.strip()):
+        return 400, {"error": "That doesn't look like an OpenRouter key (they start with sk-or-)."}
+    if TEST_AGENT_HOME is not None:
+        (Path(TEST_AGENT_HOME) / ".openrouter-key").write_text(key.strip())
+    else:
+        result = await asyncio.to_thread(agent_run, ["podman", "secret", "create", "--replace", KEY_SECRET, "-"],
+                                         key.strip())
+        if result.returncode != 0:
+            return 502, {"error": f"Couldn't save the key: {result.stderr.strip()[:200]}"}
+    _usage = None
+    log(f"{owner} gave the agent a new OpenRouter key")
+    await restart_agent()
+    return 200, {"saved": True}
+
+
+async def list_devices(data: dict, query: dict, owner: str, device_id: str) -> tuple[int, dict]:
+    devices.load()
+    keep = ("name", "owner", "paired", "seen", "address", "here")
+    return 200, {"devices": [{"id": k, "this": k == device_id, **{f: v.get(f) for f in keep}}
+                             for k, v in sorted(devices.by_id.items(), key=lambda kv: -int(kv[1].get("seen", 0)))]}
+
+
+async def remove_device(data: dict, query: dict, owner: str, device_id: str) -> tuple[int, dict]:
+    target = data.get("id")
+    if not isinstance(target, str) or target not in devices.by_id:
+        return 404, {"error": "No such device."}
+    devices.remove(target)
+    log(f"{owner} unpaired device {target}")
+    return 200, {"removed": target}
+
+
+ADMIN_ROUTES = {
+    ("GET", "/nanoborealis/agent"): agent_overview,
+    ("GET", "/nanoborealis/agent/file"): agent_file_read,
+    ("GET", "/nanoborealis/agent/files"): agent_file_list,
+    ("POST", "/nanoborealis/agent/file"): agent_file_write,
+    ("GET", "/nanoborealis/agent/logs"): agent_logs,
+    ("POST", "/nanoborealis/agent/restart"): agent_restart,
+    ("GET", "/nanoborealis/agent/usage"): agent_usage,
+    ("POST", "/nanoborealis/agent/key"): set_agent_key,
+    ("GET", "/nanoborealis/devices"): list_devices,
+    ("POST", "/nanoborealis/devices/remove"): remove_device,
+}
+
+
+async def admin(method: str, target: str, headers: list[tuple[str, str]], reader: asyncio.StreamReader,
+                writer: asyncio.StreamWriter, address: str) -> None:
+    """The control center's endpoints: for devices paired by an administrator of this computer."""
+    path, _, query_string = target.partition("?")
+    device_id = devices.find(header(headers, DEVICE_HEADER))
+    if device_id is None:
+        return await reply(writer, 401, {"error": "This device isn't paired with this computer."})
+    owner = owner_of(device_id)
+    try:
+        import pwd
+        allowed = owner is not None and administrator(pwd.getpwnam(owner).pw_uid) is not None
+    except (ImportError, KeyError):
+        allowed = False
+    if not allowed:
+        return await reply(writer, 403, {"error": "Only devices paired by an administrator of this computer "
+                                                  "can manage its agent."})
+    devices.seen(device_id, address)
+    data: dict = {}
+    if method == "POST":
+        try:
+            length = int(header(headers, "content-length") or 0)
+            if not 0 <= length <= ADMIN_BODY_LIMIT:
+                raise ValueError("too long")
+            data = json.loads(await asyncio.wait_for(reader.readexactly(length), 30) if length else b"{}")
+            if not isinstance(data, dict):
+                raise ValueError("not an object")
+        except (ValueError, asyncio.TimeoutError, asyncio.IncompleteReadError):
+            return await reply(writer, 400, {"error": "Bad request."})
+    query = {k: v[-1] for k, v in urllib.parse.parse_qs(query_string).items()}
+    try:
+        status, payload = await ADMIN_ROUTES[(method, path)](data, query, owner, device_id)
+    except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as e:
+        log(f"managing the agent failed ({path}): {e}")
+        status, payload = 502, {"error": f"The agent's files couldn't be reached: {e}"}
+    await reply(writer, status, payload)
 
 
 # -- The app on this computer -------------------------------------------------------------------

@@ -4,6 +4,7 @@
     python dev/remote.py pair-start 192.168.1.20 laptop.json   # or in two steps, for scripts:
     python dev/remote.py pair-finish laptop.json 123456        # the PIN is good for five minutes
     python dev/remote.py run laptop.json 'journalctl -b -1 -k | tail'
+    python dev/remote.py push laptop.json src '~/.cache/nb-dev'  # copy files there, as the owner
 
 The paired computer's certificate and this device's password end up in the JSON file: keep it
 private. `nanoborealis devices remove <id>` on the computer unpairs it.
@@ -11,9 +12,13 @@ private. `nanoborealis devices remove <id>` on the computer unpairs it.
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
+import shlex
 import sys
+import tarfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -54,6 +59,29 @@ def finish(path: str, pin: str, session: Pairing | None = None) -> None:
     print(f"Paired with {machine.name} as device {machine.device_id}.")
 
 
+def push(machine: Machine, local: str, remote_dir: str) -> None:
+    """Copy a file or folder into remote_dir there (made if missing), through commands: each carries
+    a slice of a gzipped tar, small enough for one command line."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        tar.add(local, arcname=os.path.basename(os.path.normpath(local)),
+                filter=lambda i: None if "__pycache__" in i.name or i.name.endswith(".pyc") else i)
+    data = base64.b64encode(buffer.getvalue()).decode()
+    target = remote_dir if remote_dir.startswith("~") else shlex.quote(remote_dir)
+    staging = "~/.cache/nb-push.b64"
+    run_command(machine, f"mkdir -p ~/.cache && : > {staging}")
+    step = 96_000
+    for start in range(0, len(data), step):
+        status, output = run_command(machine, f"printf %s {data[start:start + step]} >> {staging}")
+        if status != 0:
+            raise SystemExit(f"copying failed: {plain(output)}")
+    status, output = run_command(machine, f"mkdir -p {target} && base64 -d {staging} | tar -xz -C {target} "
+                                          f"&& rm -f {staging}")
+    if status != 0:
+        raise SystemExit(f"unpacking failed: {plain(output)}")
+    print(f"copied {local} to {remote_dir} ({len(buffer.getvalue())} bytes packed)")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) >= 3 and argv[0] == "pair":
         session = start(argv[1], argv[2])
@@ -62,6 +90,12 @@ def main(argv: list[str]) -> int:
         start(argv[1], argv[2])
     elif len(argv) == 3 and argv[0] == "pair-finish":
         finish(argv[1], argv[2])
+    elif len(argv) == 4 and argv[0] == "push":
+        with open(argv[1]) as f:
+            machine = Machine.from_json(json.load(f))
+        if machine is None:
+            raise SystemExit(f"{argv[1]} doesn't hold a paired computer")
+        push(machine, argv[2], argv[3])
     elif len(argv) >= 3 and argv[0] == "run":
         with open(argv[1]) as f:
             machine = Machine.from_json(json.load(f))

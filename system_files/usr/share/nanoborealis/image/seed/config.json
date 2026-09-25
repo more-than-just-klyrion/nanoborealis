@@ -50,7 +50,9 @@
   "agents": {
     "defaults": {
       "modelPreset": "ultra",
-      "fallbackModels": ["super", "lightning"]
+      "fallbackModels": ["super", "lightning"],
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "provider": "openrouter"
     }
   },
 
