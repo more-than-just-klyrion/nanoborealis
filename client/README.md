@@ -14,7 +14,7 @@ Your chats live on the NanoBorealis machine, so they carry over everywhere. A ch
 
 ## Connect it to your agent
 
-Pick your NanoBorealis computer in the app. The app finds computers on your network by itself (they announce themselves over mDNS, like printers), or you can type an address. The computer shows a **6-digit PIN** on its screen, and typing it into the app pairs this device. That's all: no passwords to copy.
+Pick your NanoBorealis computer in the app. The app finds computers on your network by itself (they announce themselves over mDNS, like printers), or you can type an address. The computer shows a **6-digit PIN** on its screen, and typing it into the app pairs this device. That's all: no passwords to copy. On a NanoBorealis computer itself, the app comes with the OS and pairs by itself, with no PIN.
 
 - **Encrypted.** Everything travels over TLS. While pairing, the app and the computer each pick a random number, and both work the PIN out from the two numbers and the computer's certificate. So a PIN that matches also proves to the app that nothing on the network is posing as your computer (the same numeric comparison Bluetooth pairing uses). From then on, the app trusts that computer's certificate and no other.
 - **A long password per device.** Once the PIN checks out, the computer generates a long random password for this device and sends it over the encrypted connection. The app keeps it in its local storage and presents it every time. The computer keeps only a hash. Each device has its own password, so removing one doesn't affect the others.

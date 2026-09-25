@@ -10,6 +10,9 @@ Restart=on-failure
 RestartSec=5
 StateDirectory=nanoborealis/remote
 StateDirectoryMode=0700
+# /run/nanoborealis/local.sock: where the NanoBorealis app on this computer pairs without a PIN.
+RuntimeDirectory=nanoborealis
+RuntimeDirectoryMode=0755
 UMask=0077
 PrivateTmp=yes
 ProtectSystem=full

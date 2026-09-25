@@ -15,9 +15,11 @@ Nothing here imports Flet, and every call blocks: run them in a thread.
 
 from __future__ import annotations
 
+import getpass
 import hashlib
 import http.client
 import json
+import os
 import platform
 import secrets
 import socket
@@ -230,6 +232,32 @@ class Pairing:
                            str(data["password"]), str(data["device_id"]))
         except KeyError as e:
             raise PairingError("The computer didn't finish pairing. Try again.") from e
+
+
+LOCAL_SOCKET = "/run/nanoborealis/local.sock"
+
+
+def pair_here(path: str = LOCAL_SOCKET) -> Machine | None:
+    """On a NanoBorealis computer, pair the app with that computer itself, with no PIN: the
+    computer's remote-access service asks the kernel who is connecting, and pairs administrators
+    signed in there. None when this isn't a NanoBorealis computer."""
+    if not hasattr(socket, "AF_UNIX") or not os.path.exists(path):
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as local:
+            local.settimeout(15)
+            local.connect(path)
+            local.sendall((json.dumps({"device": f"This computer ({getpass.getuser()})"}) + "\n").encode())
+            answer = json.loads(local.makefile("rb").readline() or b"{}")
+    except (OSError, ValueError) as e:
+        raise PairingError(f"This computer's NanoBorealis service didn't answer: {e}") from e
+    if not isinstance(answer, dict) or "error" in answer:
+        raise PairingError(str(answer.get("error") if isinstance(answer, dict) else "Unexpected answer."))
+    try:
+        return Machine("127.0.0.1", int(answer["port"]), str(answer["machine"]), str(answer["certificate"]),
+                       str(answer["password"]), str(answer["device_id"]))
+    except (KeyError, TypeError, ValueError) as e:
+        raise PairingError("This computer's NanoBorealis service gave an incomplete answer.") from e
 
 
 def unpair(machine: Machine) -> None:

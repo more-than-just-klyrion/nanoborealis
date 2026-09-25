@@ -237,7 +237,18 @@ class NanoBorealisApp:
         self.address = await self.pref_get(PREF_ADDRESS)
         self.machines = await self.load_machines()
         self.page.run_task(self.check_for_update)
-        last = self.machines.get(await self.pref_get(PREF_LAST_MACHINE))
+        # On a NanoBorealis computer, the app is that computer's own window onto its agent: it
+        # pairs with it by itself, no PIN, and opens straight into the chat.
+        here = next((m for m in self.machines.values() if m.host == "127.0.0.1"), None)
+        if here is None:
+            try:
+                here = await asyncio.to_thread(pairing.pair_here)
+            except pairing.PairingError as e:
+                print(f"nanoborealis-client: couldn't pair with this computer: {e}")
+            if here is not None:
+                self.machines[here.key] = here
+                await self.save_machines()
+        last = self.machines.get(await self.pref_get(PREF_LAST_MACHINE)) or here
         if last is not None:
             await self.connect(last)
         else:
@@ -798,9 +809,11 @@ class NanoBorealisApp:
                 ], spacing=10),
             ),
         )
+        # The copy that comes with NanoBorealis is updated with the OS, not by itself.
+        with_os = os.path.abspath(__file__).startswith("/usr/")
         return ft.Column(expand=True, spacing=6,
                          controls=[*top, *([chat_list] if chat_list else []), ft.Divider(height=1), terminal, share,
-                                   stick, updates, bottom])
+                                   stick, *([] if with_os else [updates]), bottom])
 
     def welcome_view(self) -> ft.Control:
         chips = [

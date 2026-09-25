@@ -10,6 +10,7 @@ dnf5 install -y nftables
 chmod 0755 /usr/libexec/nanoborealis-firstrun \
            /usr/libexec/nanoborealis-firewall \
            /usr/libexec/nanoborealis-remote \
+           /usr/bin/nanoborealis-app \
            /usr/libexec/nanoborealis-migrate \
            /usr/libexec/nanoborealis-setup-from-stick \
            /usr/libexec/nanoborealis-relay \
@@ -28,6 +29,29 @@ systemctl enable nanoborealis-firewall.service nanoborealis-migrate.service nano
 # with a password of its own (nanoborealis-remote). Avahi announces the computer so the app finds it.
 systemctl enable nanoborealis-remote.service
 systemctl enable avahi-daemon.service
+
+# The NanoBorealis app: this computer's own window onto its agent, the same app as on phones and
+# PCs, from this commit's source (client/src). It gets a private Python environment, and Flet's
+# Linux window program in its "light" build (no video or audio, so fewer system libraries), put
+# where nanoborealis-app points Flet, so nothing downloads on first start.
+app=/usr/lib/nanoborealis-app
+python3 -m venv "$app/venv"
+"$app/venv/bin/pip" install --no-cache-dir --quiet "flet[desktop]==1.0.1" "websockets>=14" "zeroconf>=0.130"
+cp -r /ctx/client/src "$app/src"
+rm -rf "$app/src/__pycache__"
+flet_client="$(FLET_DESKTOP_FLAVOR=light "$app/venv/bin/python3" -c 'import flet_desktop; print(flet_desktop.get_artifact_filename())')"
+flet_version="$("$app/venv/bin/python3" -c 'import flet_desktop.version; print(flet_desktop.version.version)')"
+curl -fsSL --retry 3 -o /tmp/flet-client.tar.gz \
+    "https://github.com/flet-dev/flet/releases/download/v${flet_version}/${flet_client}"
+mkdir -p "$app/client"
+tar -xzf /tmp/flet-client.tar.gz -C "$app/client"
+rm -f /tmp/flet-client.tar.gz
+test -x "$app/client/flet/flet"
+# Whatever system libraries it needs that Aurora lacks, installed by the names it asks for
+# (libgtk-3.so.0 and the like), so this stays right as Flet or Aurora change.
+needs="$(ldd "$app/client/flet/flet" | awk '/not found/ {print $1 "()(64bit)"}' | sort -u)"
+[ -z "$needs" ] || dnf5 install -y $needs
+"$app/venv/bin/python3" -m compileall -q "$app/src" "$app/venv/lib" >/dev/null || true
 
 # Updates are opt-in: machines only move to a newer build when their owner runs
 # `nanoborealis update`. Masking (not just disabling) keeps presets from re-enabling these.

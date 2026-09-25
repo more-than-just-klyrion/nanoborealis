@@ -6,9 +6,10 @@ runuser), in test mode with NANOBOREALIS_REMOTE_TEST_OWNER naming that person's 
     sudo env NANOBOREALIS_REMOTE_PORT=18868 NANOBOREALIS_REMOTE_STATE=/tmp/remote3 \
         NANOBOREALIS_REMOTE_TEST_SECRET=x NANOBOREALIS_REMOTE_TEST_PIN_FILE=/tmp/pin3 \
         NANOBOREALIS_REMOTE_TEST_OWNER=$USER python3 system_files/usr/libexec/nanoborealis-remote &
-    python dev/terminal_check.py 127.0.0.1:18868 /tmp/pin3 $USER
+    python dev/terminal_check.py 127.0.0.1:18868 /tmp/pin3 $USER [/tmp/local3.sock]
 
-Exits non-zero on the first failed check.
+With the service's NANOBOREALIS_REMOTE_LOCAL_SOCKET as a last argument, it also checks how the
+app on the computer itself pairs, with no PIN. Exits non-zero on the first failed check.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from pairing import Machine, NotPaired, split_address  # noqa: E402
+from pairing import Machine, NotPaired, pair_here, split_address  # noqa: E402
 from pairing_check import check, pair  # noqa: E402
 from terminal import Terminal, plain, run_command  # noqa: E402
 
@@ -34,7 +35,7 @@ async def read_until(term: Terminal, needle: str, timeout: float = 20) -> str:
     return plain(seen)
 
 
-async def main(address: str, pin_file: str, owner: str) -> None:
+async def main(address: str, pin_file: str, owner: str, here_socket: str = "") -> None:
     host, port = split_address(address)
     machine = await asyncio.to_thread(pair, host, port, pin_file, "Terminal check")
 
@@ -66,10 +67,25 @@ async def main(address: str, pin_file: str, owner: str) -> None:
         check(False, "an unknown device gets no terminal")
     except NotPaired:
         check(True, "an unknown device gets no terminal")
+
+    if here_socket:
+        here = await asyncio.to_thread(pair_here, here_socket)
+        check(here is not None and here.host == "127.0.0.1" and here.port == port,
+              "the app on this computer pairs with it by itself, no PIN")
+        status, output = await asyncio.to_thread(run_command, here, "id -un")
+        check(status == 0 and output.split() == [owner], f"...and works as {owner} ({output.split()})")
+        again = await asyncio.to_thread(pair_here, here_socket)
+        status, output = await asyncio.to_thread(run_command, again, "true")
+        check(status == 0 and again.password != here.password, "pairing again gives it a new password")
+        try:
+            await asyncio.to_thread(run_command, here, "true")
+            check(False, "...which replaces the old one, instead of piling up devices")
+        except NotPaired:
+            check(True, "...which replaces the old one, instead of piling up devices")
     print("all terminal checks passed")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         raise SystemExit(__doc__)
     asyncio.run(main(*sys.argv[1:]))

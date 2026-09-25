@@ -11,7 +11,8 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 ## What it sets up
 
 - **`nanobot-agent`**, an account that can't log in, owns nothing else, and runs the agent
-- **The agent:** nanobot 0.3.5 in a rootless Podman container that systemd runs through Quadlet. Its WebUI is at `http://127.0.0.1:8765`, behind a password, and in the app menu as **NanoBorealis**
+- **The agent:** nanobot 0.3.5 in a rootless Podman container that systemd runs through Quadlet. Its WebUI is at `http://127.0.0.1:8765`, behind a password
+- **The NanoBorealis app, built in:** **NanoBorealis** in the app menu is the same app as on phones and PCs. On this computer it pairs by itself, with no PIN, for administrators signed in here (it asks the pairing service over `/run/nanoborealis/local.sock`, and the kernel says who is asking), and it updates with the OS
 - **Pairing for your other devices:** the NanoBorealis app on a phone or PC pairs with a 6-digit PIN shown on this screen, then connects over TLS with a long password of its own (`nanoborealis-remote`, port 8766). A paired device can chat with the agent and open a terminal here as whoever approved it
 - **Free Nemotron models with automatic fallback:** Ultra 550B, then Super 120B, then Lightning 30B
 - **Skills:** `code-review`, `debugging`, `git-workflow`, `new-project`, `planning`, `simplify`
@@ -53,11 +54,11 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 | `nanoborealis update` | Check the build this computer follows for something newer, show what's new, and download it if you agree, along with app updates. It takes effect at the next reboot. `--stable`, `--testing` or `--dev` moves the computer to that build: stable is tested releases, testing is candidates for the next one, dev is every build |
 | `nanoborealis rollback` | Go back to the build you ran before the last update (then reboot) |
 | `nanoborealis version` | Show which build is running, which one is staged, and which channel this system follows |
-| `nanoborealis open` | Open the WebUI |
+| `nanoborealis open` | Open the NanoBorealis app (`--web`: the WebUI in a browser instead) |
 | `nanoborealis status` / `logs` | Show whether the agent is running, or follow its logs |
 | `nanoborealis restart` | Restart the agent in a fresh container |
 | `nanoborealis shell` | Open a shell inside the agent's container |
-| `nanoborealis password` | Show the WebUI password, which the agent's page asks for once in this computer's browser. The NanoBorealis app never needs it |
+| `nanoborealis password` | Show the WebUI password, which the agent's page asks for once in this computer's browser. The NanoBorealis app never needs it, here or on other devices |
 | `nanoborealis remote on` / `off` / `status` | Let the NanoBorealis app on your other devices pair with this computer (on by default), or keep the agent to this machine only. While it's on, this machine announces itself over mDNS so the app finds it |
 | `nanoborealis devices` / `devices remove <id>` | List the devices paired with this computer, or unpair one |
 | `nanoborealis compute add` / `remove` / `use` / `list` | Run the agent on a model hosted by another device. The NanoBorealis client sets the device up and shows the exact `add` command; `use <name>` makes it the first choice, `use cloud` switches back |

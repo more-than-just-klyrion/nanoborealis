@@ -12,7 +12,13 @@ on:
     # Only changes that can alter the OS image rebuild it (a push cancels a build in progress).
     paths-ignore:
       - '**/README.md'
-      - 'client/**'
+      # The app's source (client/src) ships in the image; its tools and packaging don't.
+      - 'client/dev/**'
+      - 'client/packaging/**'
+      - 'client/pyproject.toml'
+      - 'client/run.sh'
+      - 'client/run-windows.cmd'
+      - '.github/workflows/client-release.yml'
       - '.github/workflows/test-*.yml'
       - '.github/workflows/spike-*.yml'
       - '.github/workflows/promote.yml'

@@ -18,7 +18,7 @@ Usage: $(basename "$0") <command>
                     --testing or --dev moves it (dev: every build; testing: candidates).
   rollback          go back to the build you ran before the last update (reboot to apply)
   version           show which build is running and which channel it follows
-  open              open the WebUI ($WEBUI_URL)
+  open [--web]      open the NanoBorealis app (--web: the agent's page in a browser)
   status            show the service status
   logs              follow the agent's logs
   restart           restart the agent (fresh container, same memory and settings)
@@ -294,7 +294,11 @@ confirm() {
 
 case "$cmd" in
     open)
-        xdg-open "$WEBUI_URL" ;;
+        if [ "${2:-}" = "--web" ] || ! command -v nanoborealis-app >/dev/null; then
+            xdg-open "$WEBUI_URL"
+        else
+            setsid -f nanoborealis-app >/dev/null 2>&1
+        fi ;;
     status)
         agentctl status nanobot.service --no-pager ;;
     logs)

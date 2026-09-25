@@ -4,6 +4,7 @@ FROM scratch AS ctx
 COPY build_files /
 COPY system_files /system_files
 COPY branding /branding
+COPY client/src /client/src
 
 FROM ghcr.io/ublue-os/aurora:stable
 

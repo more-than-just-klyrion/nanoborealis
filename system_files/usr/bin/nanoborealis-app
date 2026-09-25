@@ -1,0 +1,9 @@
+#!/usr/bin/sh
+# The NanoBorealis app on this computer: the agent's own window, the same app as on phones and
+# PCs. It pairs with this computer by itself. Its Python environment and Flet's window program
+# come with the OS (build_files/build.sh), so nothing downloads on first start.
+export FLET_VIEW_PATH=/usr/lib/nanoborealis-app/client/flet
+export FLET_APP_ID=nanoborealis
+# From here, Flet can't mistake a build/linux folder where it was started for its window program.
+cd /usr/lib/nanoborealis-app || exit 1
+exec /usr/lib/nanoborealis-app/venv/bin/python3 /usr/lib/nanoborealis-app/src/main.py "$@"

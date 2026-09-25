@@ -277,7 +277,7 @@ fi
 
 # --- done ----------------------------------------------------------------------
 say "Done"
-echo "    Open:      'NanoBorealis' in the app menu   ($WEBUI_URL)"
+echo "    Open:      'NanoBorealis' in the app menu"
 echo "    Projects:  ~/nanoborealis-projects   (shared with the agent)"
 if systemctl is-enabled --quiet nanoborealis-remote.service 2>/dev/null; then
     echo "    Devices:   in the NanoBorealis app on your phone or PC, pick this computer. It shows a"

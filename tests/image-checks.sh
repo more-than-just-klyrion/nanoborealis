@@ -49,6 +49,16 @@ for tool in openssl runuser setsid loginctl gdbus; do
     expect "$tool is present (pairing needs it)" command -v "$tool"
 done
 
+# The NanoBorealis app: this computer's own window onto its agent, not a web page.
+expect "the app menu opens the NanoBorealis app" grep -q '^Exec=nanoborealis-app$' /usr/share/applications/nanoborealis.desktop
+expect "the app's launcher is executable" test -x /usr/bin/nanoborealis-app
+expect "the app's Python environment loads it" \
+    env -C /usr/lib/nanoborealis-app/src /usr/lib/nanoborealis-app/venv/bin/python3 -c 'import main, pairing, terminal'
+expect "Flet's window program is in place" test -x /usr/lib/nanoborealis-app/client/flet/flet
+missing="$(ldd /usr/lib/nanoborealis-app/client/flet/flet 2>&1 | grep 'not found' | sort -u)"
+[ -z "$missing" ] && pass "Flet's window program finds all its libraries" \
+    || flunk "Flet's window program misses libraries: $(echo $missing)"
+
 # The agent's and the pool node's service files must turn into services with this image's own
 # Podman: setup stops with "Quadlet did not turn the agent's service file into a service" otherwise.
 # And setup must look for them in a way that works on another user's services: `systemctl cat`

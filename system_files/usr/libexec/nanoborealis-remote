@@ -48,6 +48,8 @@ STATE = Path(os.environ.get("NANOBOREALIS_REMOTE_STATE", "/var/lib/nanoborealis/
 TEST_SECRET = os.environ.get("NANOBOREALIS_REMOTE_TEST_SECRET")
 TEST_PIN_FILE = os.environ.get("NANOBOREALIS_REMOTE_TEST_PIN_FILE")
 TEST_OWNER = os.environ.get("NANOBOREALIS_REMOTE_TEST_OWNER", "")
+# Where the NanoBorealis app on this computer pairs with it, without a PIN (see pair_here).
+LOCAL_SOCKET = os.environ.get("NANOBOREALIS_REMOTE_LOCAL_SOCKET", "/run/nanoborealis/local.sock")
 
 AGENT_USER = "nanobot-agent"
 DEVICE_HEADER = "x-nanoborealis-device"  # carries a paired device's password
@@ -137,14 +139,19 @@ class Devices:
         self.load()
         return self.by_hash.get(hashlib.sha256(password.encode()).hexdigest())
 
-    def add(self, name: str, address: str, owner: str) -> tuple[str, str]:
+    def add(self, name: str, address: str, owner: str, here: bool = False) -> tuple[str, str]:
         self.load()
+        if here:  # the app on this computer pairing again (its settings were lost): it replaces itself
+            for old in [k for k, v in self.by_id.items()
+                        if v.get("here") and v.get("owner") == owner and v.get("name") == name]:
+                del self.by_id[old]
+            self.by_hash = {v["password_sha256"]: k for k, v in self.by_id.items()}
         device_id = secrets.token_hex(4)
         password = secrets.token_urlsafe(32)  # 256 random bits
         digest = hashlib.sha256(password.encode()).hexdigest()
         now = int(time.time())
         self.by_id[device_id] = {"name": name, "password_sha256": digest, "paired": now, "seen": now,
-                                 "address": address, "owner": owner}
+                                 "address": address, "owner": owner, **({"here": True} if here else {})}
         self.by_hash[digest] = device_id
         self.save()
         return device_id, password
@@ -691,6 +698,70 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             pass
 
 
+# -- The app on this computer -------------------------------------------------------------------
+
+
+def administrator(uid: int) -> str | None:
+    """The account behind uid if it may pair this computer's own app: an administrator (wheel),
+    never root or the agent's account. In tests, any ordinary account."""
+    import grp
+    import pwd
+    try:
+        account = pwd.getpwuid(uid)
+    except KeyError:
+        return None
+    if uid == 0 or account.pw_name == AGENT_USER:
+        return None
+    if TEST_OWNER:
+        return account.pw_name
+    try:
+        wheel = grp.getgrnam("wheel").gr_gid
+    except KeyError:
+        return None
+    return account.pw_name if wheel in os.getgrouplist(account.pw_name, account.pw_gid) else None
+
+
+async def pair_here(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Pairs the NanoBorealis app running on this computer, over a local socket and without a PIN:
+    the kernel says who is asking, and an administrator signed in here needs no proof of presence."""
+    import struct
+    try:
+        sock = writer.get_extra_info("socket")
+        _pid, uid, _gid = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                              struct.calcsize("3i")))
+        request = json.loads(await asyncio.wait_for(reader.readline(), 10) or b"{}")
+        owner = administrator(uid)
+        if owner is None:
+            answer = {"error": "Only an administrator of this computer can pair its own NanoBorealis app."}
+        else:
+            name = clean_name(request.get("device") if isinstance(request, dict) else None) or f"This computer ({owner})"
+            device_id, password = devices.add(name, "this computer", owner, here=True)
+            log(f"paired {name} on this computer for {owner} as device {device_id}")
+            answer = {"device_id": device_id, "password": password, "port": PORT, "machine": MACHINE,
+                      "certificate": ssl.DER_cert_to_PEM_cert(CERT_DER)}
+        writer.write(json.dumps(answer).encode() + b"\n")
+        await writer.drain()
+    except (OSError, ValueError, asyncio.TimeoutError):
+        pass
+    finally:
+        writer.close()
+
+
+async def serve_here() -> asyncio.AbstractServer | None:
+    if os.name != "posix":
+        return None
+    path = Path(LOCAL_SOCKET)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.unlink(missing_ok=True)
+        server = await asyncio.start_unix_server(pair_here, path=str(path))
+        os.chmod(path, 0o666)  # anyone may ask; pair_here decides from the kernel's word who is asking
+    except OSError as e:
+        log(f"the app on this computer can't pair by itself ({path}: {e}); it can still pair with a PIN")
+        return None
+    return server
+
+
 def quiet_tls_errors(loop: asyncio.AbstractEventLoop, context: dict) -> None:
     # Scanners and dropped connections fail the TLS handshake all the time; that's not news.
     if isinstance(context.get("exception"), (ssl.SSLError, ConnectionError, TimeoutError)):
@@ -710,10 +781,13 @@ async def main() -> None:
     devices.load()
     log(f"pairing and paired devices on port {PORT} ({len(devices.by_id)} paired); certificate "
         f"{hashlib.sha256(CERT_DER).hexdigest()[:16]}")
+    here = await serve_here()
     expiring = asyncio.create_task(expire_regularly())  # PINs of abandoned pairings leave the screen too
     async with server:
         await server.serve_forever()
     expiring.cancel()
+    if here is not None:
+        here.close()
 
 
 if __name__ == "__main__":

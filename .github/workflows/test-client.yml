@@ -67,16 +67,27 @@ jobs:
         run: '"$RUNNER_TEMP/venv/bin/python" client/dev/smoke.py "$RUNNER_TEMP/paired.json"'
 
       # A terminal runs as the person who approved the device, through runuser, so this instance
-      # runs as root, with the runner's account standing in for the person at the screen.
-      - name: Terminal and commands, as a paired device
+      # runs as root, with the runner's account standing in for the person at the screen. It also
+      # serves the local socket where the app on the computer itself pairs without a PIN.
+      - name: Terminal and commands, as a paired device, and the app on the computer itself
         run: |
           mkdir -p "$RUNNER_TEMP/remote3"
           sudo env NANOBOREALIS_REMOTE_PORT=18868 NANOBOREALIS_REMOTE_UPSTREAM_PORT=18765 \
             NANOBOREALIS_REMOTE_STATE="$RUNNER_TEMP/remote3" NANOBOREALIS_REMOTE_TEST_SECRET=test-password \
             NANOBOREALIS_REMOTE_TEST_PIN_FILE="$RUNNER_TEMP/pin3" NANOBOREALIS_REMOTE_TEST_OWNER="$USER" \
+            NANOBOREALIS_REMOTE_LOCAL_SOCKET="$RUNNER_TEMP/local3.sock" \
             nohup python3 system_files/usr/libexec/nanoborealis-remote > "$RUNNER_TEMP/remote3.log" 2>&1 &
           for i in $(seq 1 30); do grep -q 'paired devices on port' "$RUNNER_TEMP/remote3.log" && break; sleep 1; done
-          "$RUNNER_TEMP/venv/bin/python" client/dev/terminal_check.py 127.0.0.1:18868 "$RUNNER_TEMP/pin3" "$USER"
+          "$RUNNER_TEMP/venv/bin/python" client/dev/terminal_check.py 127.0.0.1:18868 "$RUNNER_TEMP/pin3" "$USER" \
+            "$RUNNER_TEMP/local3.sock"
+          # The kernel says who's asking, and root (like the agent's account) is turned away.
+          sudo "$RUNNER_TEMP/venv/bin/python" -c 'import sys; sys.path.insert(0, "client/src"); import pairing
+          try:
+              pairing.pair_here(sys.argv[1])
+          except pairing.PairingError as e:
+              print(f"ok   root cannot pair the app over the local socket ({e})")
+          else:
+              sys.exit("FAIL root paired the app over the local socket")' "$RUNNER_TEMP/local3.sock"
 
       - name: Compute sharing, end to end through a relay
         working-directory: client
