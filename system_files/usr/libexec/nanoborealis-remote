@@ -36,7 +36,7 @@ import subprocess
 import time
 import urllib.parse
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 PORT = int(os.environ.get("NANOBOREALIS_REMOTE_PORT", "8766"))
@@ -240,33 +240,45 @@ def gvariant_string(text: str) -> str:
     return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def show_pin(pin: str, device: str) -> list[str]:
-    """Put the PIN on this computer's screen, as a notification that stays until it's dismissed.
-    Returns who it was shown to."""
+def notify(name: str, uid: int, method: str, *arguments: str) -> subprocess.CompletedProcess:
+    """Call the desktop's notification service in a signed-in user's session."""
+    return subprocess.run(
+        ["runuser", "-u", name, "--", "env", f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+         "gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications",
+         "--object-path", "/org/freedesktop/Notifications", "--method", f"org.freedesktop.Notifications.{method}",
+         *arguments],
+        capture_output=True, text=True, timeout=15, cwd="/")
+
+
+def show_pin(pin: str, device: str) -> list[tuple[str, int, int]]:
+    """Put the PIN on this computer's screen, as a notification that stays until pairing ends.
+    Returns who it was shown to, as (user, uid, notification id)."""
     if TEST_PIN_FILE:
         Path(TEST_PIN_FILE).write_text(pin)
-        return [TEST_OWNER]
+        return [(TEST_OWNER, -1, 0)]
     title = f"Pairing PIN: {pin[:3]} {pin[3:]}"
     body = (f"To let {device} use your agent and a terminal on this computer as you, type this PIN into "
             "the NanoBorealis app. If you didn't start this, ignore it.")
     shown = []
     for name, uid in people_at_screen():
-        bus = f"/run/user/{uid}/bus"
-        if not os.path.exists(bus):
+        if not os.path.exists(f"/run/user/{uid}/bus"):
             continue
-        result = subprocess.run(
-            ["runuser", "-u", name, "--", "env", f"DBUS_SESSION_BUS_ADDRESS=unix:path={bus}",
-             "gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications",
-             "--object-path", "/org/freedesktop/Notifications", "--method", "org.freedesktop.Notifications.Notify",
-             gvariant_string("NanoBorealis"), "uint32 0", gvariant_string("nanoborealis"),
-             gvariant_string(title), gvariant_string(body), "@as []",
-             "{'urgency': <byte 2>, 'desktop-entry': <'nanoborealis'>}", f"int32 {PAIR_SECONDS * 1000}"],
-            capture_output=True, text=True, timeout=15, cwd="/")
+        result = notify(name, uid, "Notify", gvariant_string("NanoBorealis"), "uint32 0",
+                        gvariant_string("nanoborealis"), gvariant_string(title), gvariant_string(body), "@as []",
+                        "{'urgency': <byte 2>, 'desktop-entry': <'nanoborealis'>}", f"int32 {PAIR_SECONDS * 1000}")
         if result.returncode == 0:
-            shown.append(name)
+            note = re.search(r"uint32 (\d+)", result.stdout)
+            shown.append((name, uid, int(note.group(1)) if note else 0))
         else:
             log(f"couldn't show the PIN to {name}: {result.stderr.strip()[:200]}")
     return shown
+
+
+def close_pin(shown: list[tuple[str, int, int]]) -> None:
+    """Take a PIN off the screen once its pairing has ended, however it ended."""
+    for name, uid, note in shown:
+        if note:
+            notify(name, uid, "CloseNotification", f"uint32 {note}")
 
 
 def clean_name(value: object) -> str:
@@ -290,6 +302,7 @@ class Request:
     pin: str | None = None
     tries: int = 0
     owner: str = ""  # who saw the PIN: the account a terminal runs as
+    shown: list = field(default_factory=list)  # the PIN's notifications: (user, uid, id)
 
 
 pending: dict[str, Request] = {}
@@ -298,10 +311,23 @@ MACHINE = socket.gethostname().split(".")[0]
 CERT_DER = b""
 
 
-def drop_expired() -> None:
+async def end(key: str) -> None:
+    """Forget a pairing request, and take its PIN off the screen."""
+    request = pending.pop(key, None)
+    if request is not None and request.shown:
+        await asyncio.to_thread(close_pin, request.shown)
+
+
+async def drop_expired() -> None:
     now = time.monotonic()
     for key in [key for key, request in pending.items() if request.expires < now]:
-        del pending[key]
+        await end(key)
+
+
+async def expire_regularly() -> None:
+    while True:
+        await asyncio.sleep(30)
+        await drop_expired()
 
 
 async def pair_start(data: dict, address: str) -> tuple[int, dict]:
@@ -339,8 +365,8 @@ async def pair_reveal(data: dict, address: str) -> tuple[int, dict]:
     if not shown:
         pending.pop(str(data.get("request")), None)
         return 409, {"error": f"Nobody is signed in on {MACHINE} to see the PIN. Sign in there, then try again."}
-    request.owner = shown[0]
-    log(f"showed a pairing PIN for {request.device} ({address}) to {', '.join(shown)}")
+    request.shown, request.owner = shown, shown[0][0]
+    log(f"showed a pairing PIN for {request.device} ({address}) to {', '.join(name for name, _, _ in shown)}")
     return 200, {"ok": True}
 
 
@@ -353,11 +379,11 @@ async def pair_finish(data: dict, address: str) -> tuple[int, dict]:
     if not hmac.compare_digest(str(data.get("pin", "")).encode(), request.pin.encode()):
         left = PIN_TRIES - request.tries
         if left <= 0:
-            del pending[key]
+            await end(key)
             log(f"too many wrong PINs from {request.device} ({address}); request dropped")
             return 403, {"error": "Wrong PIN too many times. Start again.", "tries_left": 0}
         return 403, {"error": "Wrong PIN.", "tries_left": left}
-    del pending[key]
+    await end(key)
     device_id, password = devices.add(request.device, address, request.owner)
     log(f"paired {request.device} ({address}) as device {device_id}, approved by {request.owner or 'nobody'}")
     return 200, {"device_id": device_id, "password": password, "machine": MACHINE}
@@ -574,7 +600,7 @@ async def local(method: str, target: str, headers: list[tuple[str, str]], reader
         devices.remove(device_id)
         log(f"device {device_id} unpaired itself")
         return await reply(writer, 200, {"ok": True})
-    drop_expired()
+    await drop_expired()
     status, payload = await routes[path](data, address)
     await reply(writer, status, payload)
 
@@ -684,8 +710,10 @@ async def main() -> None:
     devices.load()
     log(f"pairing and paired devices on port {PORT} ({len(devices.by_id)} paired); certificate "
         f"{hashlib.sha256(CERT_DER).hexdigest()[:16]}")
+    expiring = asyncio.create_task(expire_regularly())  # PINs of abandoned pairings leave the screen too
     async with server:
         await server.serve_forever()
+    expiring.cancel()
 
 
 if __name__ == "__main__":

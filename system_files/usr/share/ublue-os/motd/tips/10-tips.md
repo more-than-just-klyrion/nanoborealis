@@ -1,5 +1,5 @@
 Your agent works in `~/nanoborealis-projects`: anything you put there, it can see and change
-Talk to your agent from your phone or another PC: run `nanoborealis remote on`, then use the NanoBorealis app
+Talk to your agent from your phone or another PC: open the NanoBorealis app there and pick this computer, then type the PIN it shows here
 `nanoborealis update` shows what's new and installs it at the next reboot; `nanoborealis rollback` goes back
 Lend a PC's graphics card to your agent from the NanoBorealis app: **Share this device's hardware**
 `nanoborealis pool join` pools this computer with others on your network to run bigger models

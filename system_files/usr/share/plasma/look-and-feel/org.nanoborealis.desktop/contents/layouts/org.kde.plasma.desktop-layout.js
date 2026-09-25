@@ -16,9 +16,10 @@ panel.alignment = "center";
 panel.lengthMode = "fit";
 panel.hiding = "none";
 
+// The launcher gets the plain white star; the colored star tile is the agent's own app.
 var launcher = panel.addWidget("org.kde.plasma.kickoff");
 launcher.currentConfigGroup = ["General"];
-launcher.writeConfig("icon", "nanoborealis");
+launcher.writeConfig("icon", "distributor-logo-symbolic");
 launcher.currentConfigGroup = ["Shortcuts"];
 launcher.writeConfig("global", "Alt+F1");
 
