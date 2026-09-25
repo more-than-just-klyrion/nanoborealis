@@ -9,6 +9,7 @@ service (admin.py).
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -78,6 +79,14 @@ CHANNEL_HINTS = {
     "mattermost": "A Mattermost bot account.",
 }
 CHANNEL_ORDER = list(CHANNEL_HINTS)
+
+
+def humanize(name: str) -> str:
+    """A setting's name as a label: "replyToMessage" -> "Reply to message", "webhookURL" -> "Webhook URL"."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name.replace("_", " "))
+    words = [w if w.isupper() and len(w) > 1 else w.lower() for w in spaced.split()]
+    text = " ".join(words)
+    return text[:1].upper() + text[1:]
 
 
 def money(value: Any) -> str:
@@ -359,7 +368,7 @@ class ControlCenter:
             spec = fields[name]
             kind = spec.get("kind") or "string"
             label = {"allowFrom": "Allow from (who may talk to it, comma-separated)",
-                     "groupPolicy": "In group chats, answer"}.get(name, name)
+                     "groupPolicy": "In group chats, answer"}.get(name, humanize(name))
             current = values.get(name, spec.get("default_value"))
             if kind == "bool":
                 control: ft.Control = ft.Switch(label=label, value=bool(current), active_color=t.ACCENT)
@@ -435,7 +444,7 @@ class ControlCenter:
                                     controls_padding=ft.Padding.only(top=8), tile_padding=ft.Padding.all(0))]
                   if more else []),
                 ft.Row([busy, result], spacing=8),
-            ], spacing=12, scroll=ft.ScrollMode.AUTO)),
+            ], spacing=12, scroll=ft.ScrollMode.AUTO, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)),
             actions=[t.quiet_button("Cancel", on_click=lambda _e: self.page.pop_dialog()),
                      t.primary_button("Save and turn on", on_click=save)],
         ))

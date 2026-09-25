@@ -10,8 +10,10 @@ Exits non-zero on the first failed check.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -32,6 +34,17 @@ def main(address: str, pin_file: str, home: str) -> None:
     host, port = split_address(address)
     machine = pair(host, port, pin_file, "Control center check")
     check(admin.supported(machine), "the computer offers the control center")
+    config_path = os.path.join(home, ".nanobot", "config.json")
+    for _ in range(50):
+        config = json.load(open(config_path))
+        if config["agents"]["defaults"].get("model"):
+            break
+        time.sleep(0.2)
+    limit = config["providers"]["openrouter"].get("extraBody", {}).get("provider", {}).get("max_price", {})
+    check(config["agents"]["defaults"].get("model", "").endswith(":free") and limit.get("prompt") == 0,
+          "an agent set up before free-only is kept to free models")
+    check(config["providers"]["openrouter"]["apiKey"] == "${OPENROUTER_API_KEY}" and
+          config["agents"]["defaults"]["modelPreset"] == "ultra", "...and nothing else in its config changes")
     info = admin.overview(machine)
     check(info["agent"]["running"] and info["machine"], f"overview: the agent's state ({info['agent']['state']})")
 

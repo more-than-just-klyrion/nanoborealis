@@ -48,46 +48,6 @@ if [ ! -e "$clock_marker" ]; then
     mkdir -p /var/lib/nanoborealis && touch "$clock_marker"
 fi
 
-# Keeping the agent free. nanobot always offers a model preset named "default", made from
-# agents.defaults.model, and that is Claude Opus, which is billed, unless the config says
-# otherwise; configs from before September 25, 2026 didn't. Point it at the free Nemotron Ultra,
-# and have OpenRouter refuse any request that would cost money (its max_price limit; the app's
-# "Free models only" switch). Once, as the agent's own account, and only where never set.
-model_marker=/var/lib/nanoborealis/free-only
-if [ ! -e "$model_marker" ] && agent_home="$(getent passwd "$AGENT_USER" | cut -d: -f6)" && [ -n "$agent_home" ]; then
-    config="$agent_home/.local/share/containers/storage/volumes/nanobot-home/_data/.nanobot/config.json"
-    if runuser -u "$AGENT_USER" -- test -f "$config"; then
-        if runuser -u "$AGENT_USER" -- python3 - "$config" <<'EOF'
-import json, os, sys
-path = sys.argv[1]
-with open(path, encoding="utf-8") as f:
-    config = json.load(f)
-changed = False
-defaults = config.setdefault("agents", {}).setdefault("defaults", {})
-if not defaults.get("model"):  # never chosen: nanobot's own default is a billed model
-    defaults["model"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
-    defaults["provider"] = "openrouter"
-    changed = True
-openrouter = config.setdefault("providers", {}).setdefault("openrouter", {})
-body = openrouter.get("extraBody") or openrouter.get("extra_body")
-if body is None:  # never set: have OpenRouter refuse anything that costs money
-    openrouter["extraBody"] = {"provider": {"max_price": {"prompt": 0, "completion": 0, "request": 0, "image": 0}}}
-    changed = True
-if not changed:
-    sys.exit(1)
-temporary = path + ".nanoborealis-tmp"
-with open(temporary, "w", encoding="utf-8") as f:
-    f.write(json.dumps(config, indent=2) + "\n")
-os.chmod(temporary, os.stat(path).st_mode & 0o777)
-os.replace(temporary, path)
-EOF
-        then
-            log "the agent is kept to free models now (default preset, OpenRouter price limit)"
-        fi
-        mkdir -p /var/lib/nanoborealis && touch "$model_marker"
-    fi
-fi
-
 # Devices approved for compute sharing.
 if [ -d /etc/nanoaurora ] && [ ! -e /etc/nanoborealis ]; then
     mv /etc/nanoaurora /etc/nanoborealis && log "moved /etc/nanoaurora to /etc/nanoborealis"

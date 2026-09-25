@@ -717,6 +717,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
 TEST_AGENT_HOME = os.environ.get("NANOBOREALIS_REMOTE_TEST_AGENT_HOME")  # tests: a folder as the agent's home
 ADMIN_BODY_LIMIT = 512 * 1024
 AGENT_UNIT = "nanobot.service"
+AGENT_CONTAINER = "nanobot"
+AGENT_HOME_INSIDE = "/home/nanobot"  # the agent's home, inside its container
 WORKSPACE = ".nanobot/workspace"
 KEY_SECRET = "openrouter_api_key"
 
@@ -772,28 +774,26 @@ def agent_run(args: list[str], stdin: str | None = None, timeout: float = 60) ->
         input=stdin, capture_output=True, text=True, timeout=timeout, cwd="/")
 
 
-_agent_home: str | None = None
-
-
-def agent_home() -> str:
-    """The agent's home inside its container (/home/nanobot), as its Podman volume here."""
-    global _agent_home
-    if TEST_AGENT_HOME is not None:
-        return TEST_AGENT_HOME
-    if _agent_home is None:
-        result = agent_run(["podman", "volume", "inspect", "nanobot-home", "--format", "{{.Mountpoint}}"])
-        if result.returncode != 0 or not result.stdout.strip():
-            raise RuntimeError(f"can't find the agent's home: {result.stderr.strip()[:200]}")
-        _agent_home = result.stdout.strip()
-    return _agent_home
-
-
 def agent_file(op: str, relative: str = "", content: str | None = None) -> str:
-    result = agent_run(["python3", "-c", AGENT_FILES, agent_home(), op, *([relative] if relative else [])],
-                       stdin=content)
+    """File work in the agent's home, done inside its running container (as `nanoborealis compute`
+    does): its files are its container's, and reading them from out here is refused."""
+    rest = [op, *([relative] if relative else [])]
+    if TEST_AGENT_HOME is not None:
+        args = ["python3", "-c", AGENT_FILES, TEST_AGENT_HOME, *rest]
+    else:
+        args = ["podman", "exec", "-i", AGENT_CONTAINER, "python3", "-c", AGENT_FILES, AGENT_HOME_INSIDE, *rest]
+    result = agent_run(args, stdin=content)
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip().splitlines()[-1] if result.stderr.strip() else f"{op} failed")
+        detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else f"{op} failed"
+        if "no such container" in detail.lower() or "not running" in detail.lower():
+            raise RuntimeError("The agent isn't running. Restart it from the Overview, then try again.")
+        raise RuntimeError(detail)
     return result.stdout
+
+
+def agent_systemctl(*args: str, timeout: float = 30) -> subprocess.CompletedProcess:
+    """systemctl for the agent's own user manager, over its user bus (`-M` doesn't work in here)."""
+    return agent_run(["systemctl", "--user", *args], timeout=timeout)
 
 
 def agent_answers() -> bool:
@@ -809,9 +809,8 @@ def unit_state() -> dict:
     answering = agent_answers()
     if TEST_AGENT_HOME is not None:
         return {"running": True, "state": "active", "since": None}
-    result = subprocess.run(["systemctl", "--user", "-M", f"{AGENT_USER}@", "show", AGENT_UNIT,
-                             "-p", "ActiveState", "-p", "SubState", "-p", "ActiveEnterTimestamp"],
-                            capture_output=True, text=True, timeout=20)
+    result = agent_systemctl("show", AGENT_UNIT, "-p", "ActiveState", "-p", "SubState", "-p", "ActiveEnterTimestamp",
+                             timeout=20)
     props = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     if not props:
         log(f"couldn't ask systemd about the agent: {result.stderr.strip()[:200]}")
@@ -893,8 +892,9 @@ async def agent_logs(data: dict, query: dict, owner: str, device_id: str) -> tup
 async def restart_agent() -> None:
     if TEST_AGENT_HOME is not None:
         return
-    await asyncio.to_thread(subprocess.run, ["systemctl", "--user", "-M", f"{AGENT_USER}@", "restart", AGENT_UNIT],
-                            capture_output=True, timeout=300)
+    result = await asyncio.to_thread(agent_systemctl, "restart", AGENT_UNIT, timeout=300)
+    if result.returncode != 0:
+        raise RuntimeError(f"couldn't restart the agent: {result.stderr.strip()[:200]}")
 
 
 async def agent_restart(data: dict, query: dict, owner: str, device_id: str) -> tuple[int, dict]:
@@ -975,6 +975,49 @@ async def remove_device(data: dict, query: dict, owner: str, device_id: str) -> 
     devices.remove(target)
     log(f"{owner} unpaired device {target}")
     return 200, {"removed": target}
+
+
+FREE_ONLY = {"provider": {"max_price": {"prompt": 0, "completion": 0, "request": 0, "image": 0}}}
+FREE_DEFAULT = "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+
+def free_only_config(config: dict) -> bool:
+    """Keep an agent's config on free models: nanobot's hidden "default" preset (made from
+    agents.defaults.model, a billed Claude model when unset) points at a free one, and OpenRouter is
+    told to refuse any request that would cost money (the app's "Free models only"). Only where
+    never set, so a deliberate choice stands. True when anything changed."""
+    changed = False
+    defaults = config.setdefault("agents", {}).setdefault("defaults", {})
+    if not defaults.get("model"):
+        defaults["model"], defaults["provider"] = FREE_DEFAULT, "openrouter"
+        changed = True
+    openrouter = config.setdefault("providers", {}).setdefault("openrouter", {})
+    if openrouter.get("extraBody") is None and openrouter.get("extra_body") is None:
+        openrouter["extraBody"] = json.loads(json.dumps(FREE_ONLY))
+        changed = True
+    return changed
+
+
+async def keep_agent_free() -> None:
+    """Apply free_only_config to agents set up before it existed, once per computer, as soon as the
+    agent's container runs (nanobot rereads its config by itself)."""
+    marker = STATE / "free-only-applied"
+    while not marker.exists():
+        try:
+            def apply() -> bool:
+                config = json.loads(agent_file("read", ".nanobot/config.json") or "{}")
+                if not isinstance(config, dict):
+                    raise ValueError("the agent's config isn't a JSON object")
+                if free_only_config(config):
+                    agent_file("write", ".nanobot/config.json", json.dumps(config, indent=2) + "\n")
+                    return True
+                return False
+            if await asyncio.to_thread(apply):
+                log("kept the agent to free models (its default preset, and OpenRouter's price limit)")
+            marker.touch()
+            return
+        except (RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+            await asyncio.sleep(60)  # not running yet: try again
 
 
 ADMIN_ROUTES = {
@@ -1113,9 +1156,11 @@ async def main() -> None:
         f"{hashlib.sha256(CERT_DER).hexdigest()[:16]}")
     here = await serve_here()
     expiring = asyncio.create_task(expire_regularly())  # PINs of abandoned pairings leave the screen too
+    freeing = asyncio.create_task(keep_agent_free())
     async with server:
         await server.serve_forever()
     expiring.cancel()
+    freeing.cancel()
     if here is not None:
         here.close()
 

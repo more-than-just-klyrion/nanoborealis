@@ -72,6 +72,8 @@ jobs:
       - name: Terminal and commands, as a paired device, and the app on the computer itself
         run: |
           mkdir -p "$RUNNER_TEMP/remote3" "$RUNNER_TEMP/agenthome/.nanobot/workspace"
+          # An agent set up before "Free models only": the service keeps it to free models once.
+          echo '{"providers": {"openrouter": {"apiKey": "${OPENROUTER_API_KEY}"}}, "agents": {"defaults": {"modelPreset": "ultra"}}}'             > "$RUNNER_TEMP/agenthome/.nanobot/config.json"
           sudo env NANOBOREALIS_REMOTE_PORT=18868 NANOBOREALIS_REMOTE_UPSTREAM_PORT=18765 \
             NANOBOREALIS_REMOTE_STATE="$RUNNER_TEMP/remote3" NANOBOREALIS_REMOTE_TEST_SECRET=test-password \
             NANOBOREALIS_REMOTE_TEST_PIN_FILE="$RUNNER_TEMP/pin3" NANOBOREALIS_REMOTE_TEST_OWNER="$USER" \
