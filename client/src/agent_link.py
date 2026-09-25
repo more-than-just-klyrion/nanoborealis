@@ -98,6 +98,8 @@ class AgentLink:
         self._api_token_expiry = 0.0
         self._new_chat_waiters: list[asyncio.Future[str]] = []
         self._attach_waiters: dict[str, asyncio.Future[str]] = {}
+        self._requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self.limits: dict[str, Any] = {}
 
     @property
     def connected(self) -> bool:
@@ -123,15 +125,21 @@ class AgentLink:
             self._api_token = api_token
             self._api_token_expiry = time.monotonic() + expires_in - 30
         model_name = data.get("model_name") if isinstance(data.get("model_name"), str) else None
+        if isinstance(data.get("limits"), dict):
+            self.limits = data["limits"]
         return Bootstrap(token, ws_url, api_token, expires_in, model_name)
 
-    async def _api_get(self, path: str) -> Any:
+    async def _api_get(self, path: str, timeout: float = 15) -> Any:
         if not self._api_token or time.monotonic() > self._api_token_expiry:
             await self.bootstrap()
         if not self._api_token:
             raise LinkError("The agent did not issue an API token.")
         headers = {**self._device, "Authorization": f"Bearer {self._api_token}"}
-        return await asyncio.to_thread(_get_json, f"{self.base_url}{path}", headers, self._context)
+        return await asyncio.to_thread(_get_json, f"{self.base_url}{path}", headers, self._context, timeout)
+
+    async def api_get(self, path: str, timeout: float = 30) -> Any:
+        """One of the WebUI's REST reads: /api/settings, /api/commands, /api/webui/automations..."""
+        return await self._api_get(path, timeout)
 
     async def list_chats(self) -> list[dict[str, Any]]:
         """Saved WebUI chats, newest first. Each row carries 'chat_id' plus nanobot's fields."""
@@ -203,6 +211,11 @@ class AgentLink:
             return
         if not isinstance(event, dict) or not isinstance(event.get("event"), str):
             return
+        if event["event"] == "webui_response":
+            waiter = self._requests.pop(str(event.get("request_id")), None)
+            if waiter is not None and not waiter.done():
+                waiter.set_result(event)
+            return
         if event["event"] == "attached":
             chat_id = event.get("chat_id")
             waiter = self._attach_waiters.pop(chat_id, None) if isinstance(chat_id, str) else None
@@ -228,20 +241,22 @@ class AgentLink:
         await ws.send(json.dumps(envelope, ensure_ascii=False))
 
     def _fail_waiters(self) -> None:
-        for waiter in [*self._new_chat_waiters, *self._attach_waiters.values()]:
+        for waiter in [*self._new_chat_waiters, *self._attach_waiters.values(), *self._requests.values()]:
             if not waiter.done():
                 waiter.set_exception(LinkError("Connection lost."))
         self._new_chat_waiters.clear()
         self._attach_waiters.clear()
+        self._requests.clear()
 
     # -- Commands ------------------------------------------------------------
 
-    async def new_chat(self) -> str:
-        """Create a chat on the agent and return its id."""
+    async def new_chat(self, workspace_scope: dict[str, Any] | None = None) -> str:
+        """Create a chat on the agent and return its id. workspace_scope: {"project_path": a folder in
+        the agent's container, "access_mode": "restricted" (only that folder) or "full"}."""
         waiter: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._new_chat_waiters.append(waiter)
         try:
-            await self._send({"type": "new_chat"})
+            await self._send({"type": "new_chat", **({"workspace_scope": workspace_scope} if workspace_scope else {})})
             chat_id = await asyncio.wait_for(waiter, 20)
         finally:
             if waiter in self._new_chat_waiters:
@@ -260,8 +275,53 @@ class AgentLink:
             self._attach_waiters.pop(chat_id, None)
         self.chat_id = chat_id
 
-    async def send_message(self, chat_id: str, text: str) -> None:
-        await self._send({"type": "message", "chat_id": chat_id, "content": text})
+    async def send_message(self, chat_id: str, text: str, media: list[dict[str, str]] | None = None,
+                           turn_id: str | None = None, **extra: Any) -> str:
+        """Send a message as the WebUI does (webui: true), so the agent titles new chats, echoes it
+        to this chat's other devices, and ties the turn's events to turn_id. Returns turn_id.
+        media: [{"data_url": "data:<mime>;base64,...", "name": ...}]; extra: e.g. intent="create_automation"."""
+        turn_id = turn_id or f"turn-{uuid.uuid4().hex[:16]}"
+        envelope: dict[str, Any] = {"type": "message", "chat_id": chat_id, "content": text, "webui": True,
+                                    "turn_id": turn_id, **extra}
+        if media:
+            envelope["media"] = media
+        await self._send(envelope)
+        return turn_id
+
+    async def set_workspace_scope(self, chat_id: str, workspace_scope: dict[str, Any]) -> None:
+        """Move a chat to another project folder (refused while it's working)."""
+        await self._send({"type": "set_workspace_scope", "chat_id": chat_id, "workspace_scope": workspace_scope})
+
+    async def request(self, action: str, payload: dict[str, Any] | None = None, timeout: float = 30) -> Any:
+        """A WebUI management request (settings, presets, automations, skills, chats), answered by
+        webui_response. Raises LinkError with the agent's reason when it's turned down."""
+        request_id = f"nb-{uuid.uuid4().hex}"
+        waiter: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._requests[request_id] = waiter
+        try:
+            await self._send({"type": "webui_request", "request_id": request_id, "action": action,
+                              "payload": payload or {}})
+            answer = await asyncio.wait_for(waiter, timeout)
+        finally:
+            self._requests.pop(request_id, None)
+        if not answer.get("ok"):
+            error = answer.get("error") if isinstance(answer.get("error"), dict) else {}
+            raise LinkError(str(error.get("message") or f"The agent turned down {action}."))
+        return answer.get("result")
+
+    async def new_temporary_chat(self) -> str:
+        """A chat nothing is saved from (for checks), closed with discard_temporary_chat."""
+        waiter: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._new_chat_waiters.append(waiter)
+        try:
+            await self._send({"type": "new_temporary_chat"})
+            return await asyncio.wait_for(waiter, 20)
+        finally:
+            if waiter in self._new_chat_waiters:
+                self._new_chat_waiters.remove(waiter)
+
+    async def discard_temporary_chat(self, chat_id: str) -> None:
+        await self._send({"type": "discard_temporary_chat", "chat_id": chat_id})
 
     async def stop_turn(self, chat_id: str) -> None:
         """Cancel the agent's current turn in this chat (nanobot's /stop command)."""

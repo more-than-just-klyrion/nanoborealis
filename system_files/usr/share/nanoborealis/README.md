@@ -12,9 +12,9 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 
 - **`nanobot-agent`**, an account that can't log in, owns nothing else, and runs the agent
 - **The agent:** nanobot 0.3.5 in a rootless Podman container that systemd runs through Quadlet. Its WebUI is at `http://127.0.0.1:8765`, behind a password
-- **The NanoBorealis app, built in:** **NanoBorealis** in the app menu is the same app as on phones and PCs. On this computer it pairs by itself, with no PIN, for administrators signed in here (it asks the pairing service over `/run/nanoborealis/local.sock`, and the kernel says who is asking), and it updates with the OS
+- **The NanoBorealis app, built in:** **NanoBorealis** in the app menu is the same app as on phones and PCs: a Claude Code-style workspace for the agent, and a control center for its models, chat channels, schedules, skills, memory and paired devices. On this computer it pairs by itself, with no PIN, for administrators signed in here (it asks the pairing service over `/run/nanoborealis/local.sock`, and the kernel says who is asking), and it updates with the OS
 - **Pairing for your other devices:** the NanoBorealis app on a phone or PC pairs with a 6-digit PIN shown on this screen, then connects over TLS with a long password of its own (`nanoborealis-remote`, port 8766). A paired device can chat with the agent and open a terminal here as whoever approved it
-- **Free Nemotron models with automatic fallback:** Ultra 550B, then Super 120B, then Lightning 30B
+- **Free Nemotron models with automatic fallback:** Ultra 550B, then Super 120B, then Lightning 30B. OpenRouter is told to refuse any request that would cost money, so a billed model can't slip in; the app's control center (Settings, "Free models only") turns that off if you want a paid model
 - **Skills:** `code-review`, `debugging`, `git-workflow`, `new-project`, `planning`, `simplify`
 - **`/srv/nanoborealis/projects`**, shared by you and the agent, with a shortcut at `~/nanoborealis-projects`
 

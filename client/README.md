@@ -1,16 +1,35 @@
 # NanoBorealis client
 
-The NanoBorealis app, for desktop and mobile. Use it to chat with your agent from any computer or phone, lend a device's hardware to the agent, and make install sticks for new computers.
+The NanoBorealis app, for desktop and mobile: a workspace for your agent laid out like Claude Code, and a control center for it in the spirit of OpenClaw. Use it from the NanoBorealis computer itself (it comes with the OS), or from any other computer or phone.
 
-Your chats live on the NanoBorealis machine, so they carry over everywhere. A chat started in the WebUI on the laptop, in this app on your PC, or on your phone shows up in all of them. The chat list refreshes by itself, and a chat open on two devices updates on both as the agent replies.
+Your chats live on the NanoBorealis computer, so they carry over everywhere: a chat started on the laptop, on your PC or on your phone shows up in all of them, and one open on two devices updates on both as the agent replies.
 
-- Finds NanoBorealis machines on your network by itself
-- Chat list with history, and new chats
-- Replies stream in as the agent writes them, rendered as Markdown with highlighted code
-- The agent's thinking and each tool it runs, collapsed under the reply, with the tool's output one click away
-- Stop button for a turn that's going the wrong way
-- Reconnects by itself if the network drops
-- Adapts to phone screens: the chat list moves into a drawer
+**The workspace**
+
+- Chats in the sidebar, searchable, pinned ones first and the rest by day; rename, pin or delete one from its menu
+- Replies stream in as Markdown; code blocks carry their language and a copy button
+- The agent's thinking folds into "Thought for 8s", and each tool call is one line (**Run** `npm test`, **Edit** `app.py +12 −3`) that opens to the command's output or the change as a diff
+- A status line while it works, with the time so far; **Stop** (or Esc) cancels a turn, and a message sent meanwhile joins it
+- Under each answer: how long it took, the model, the tokens; beside the message box, how full the chat's context is
+- The composer takes attachments (images, PDFs, documents, code), `/` for the agent's commands, `@` to mention a file from your projects, and the project folder the chat works in (optionally keeping the agent inside it)
+- **Each chat picks its model**: search every model on OpenRouter; free ones are marked, paid ones show their price and ask before they're used
+- A side panel with a terminal on the computer, its projects folder, and what changed there (per git repository, with diffs)
+- Reconnects by itself; on phones the sidebar moves into a drawer
+- Keys: Ctrl+N new chat, Ctrl+B sidebar, Ctrl+J terminal, Ctrl+E projects, Ctrl+K search, Esc stop
+
+**The control center**
+
+- **Overview**: whether the agent is running (restart it from here), its model and fallbacks, and what OpenRouter has charged your key, by OpenRouter's own count
+- **Models**: the default model and the ones it falls back to, in order; add any OpenRouter model
+- **Channels**: talk to the agent from Telegram, Discord, WhatsApp, Slack, email, Signal, Matrix and more; each is set up here and its connection checked before it's saved
+- **Schedules**: what the agent does by itself and when; turn one off, run it now, delete it, or ask for a new one
+- **Skills**: the know-how it loads for a task; turn skills off, or search the skill hub and install more
+- **Memory**: what it remembers, about you, its personality and standing instructions, as plain files you can edit
+- **Devices**, **Logs** and **Settings** (its OpenRouter key, and "Free models only")
+
+On the NanoBorealis computer itself the app is part of the desktop: KDE draws its window, it has its own icon in the dock, clicking the icon again brings the open window forward, and it says when the agent finishes while you're in another window.
+
+**Free models only** is on by default: OpenRouter refuses any request that would cost money, whatever model is chosen. Picking a paid model asks first, and turns it off.
 
 ## Connect it to your agent
 
@@ -24,7 +43,7 @@ On the computer, `nanoborealis devices` lists paired devices and `nanoborealis d
 
 ## A terminal on the computer
 
-**Terminal on …** in the sidebar opens a console on the paired computer, over the same encrypted connection. It runs as the person who approved this device at the computer's screen (never as root), so `sudo` asks for that person's password. Type a command and press Enter. The buttons send what a text box can't: Ctrl+C stops what's running, Tab completes what you've typed, the arrows step through earlier commands. The key button hides what you type, for passwords. It's a line-by-line console: full-screen programs such as `top` or `nano` need a real terminal.
+The terminal button above the conversation (Ctrl+J) opens a console on the paired computer, over the same encrypted connection. It runs as the person who approved this device at the computer's screen (never as root), so `sudo` asks for that person's password. Type a command and press Enter. The buttons send what a text box can't: Ctrl+C stops what's running, Tab completes what you've typed, the arrows step through earlier commands. The key button hides what you type, for passwords. It's a line-by-line console: full-screen programs such as `top` or `nano` need a real terminal.
 
 The PIN notification says that pairing allows this, so only approve devices you'd hand your keyboard to.
 

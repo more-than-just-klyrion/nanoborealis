@@ -1,7 +1,8 @@
 {
   "providers": {
     "openrouter": {
-      "apiKey": "${OPENROUTER_API_KEY}"
+      "apiKey": "${OPENROUTER_API_KEY}",
+      "extraBody": {"provider": {"max_price": {"prompt": 0, "completion": 0, "request": 0, "image": 0}}}
     }
   },
 

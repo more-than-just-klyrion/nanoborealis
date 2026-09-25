@@ -28,16 +28,25 @@ def last_user_text(messages: list[dict]) -> str:
     return ""
 
 
-def pick_tool(tools: list[dict]) -> dict | None:
+def pick_tool(tools: list[dict], user_text: str = "") -> dict | None:
     names = [t.get("function", {}).get("name", "") for t in tools]
-    for wanted in ("list_dir", "exec", "read_file"):
-        if wanted in names:
-            return next(t for t in tools if t.get("function", {}).get("name") == wanted)
+    # "write a file" and "edit the file" ask for those tools (to see file changes in the app);
+    # anything else mentioning a tool gets the first of these the gateway offers.
+    wanted = ["write_file"] if "write" in user_text.lower() else ["edit_file"] if "edit" in user_text.lower() else []
+    for name in [*wanted, "list_dir", "exec", "read_file"]:
+        if name in names:
+            return next(t for t in tools if t.get("function", {}).get("name") == name)
     return tools[0] if tools else None
 
 
+DEMO = "def greet(name):\n    return 'Hello, ' + name\n\n\nprint(greet('world'))\n"
+
+
 def tool_arguments(name: str) -> dict:
-    return {"list_dir": {"path": "."}, "exec": {"command": "echo stub-tool-ran"}, "read_file": {"path": "USER.md"}}.get(name, {})
+    return {"list_dir": {"path": "."}, "exec": {"command": "echo stub-tool-ran"}, "read_file": {"path": "USER.md"},
+            "write_file": {"path": "demo/hello.py", "content": DEMO},
+            "edit_file": {"path": "demo/hello.py", "old_text": "    return 'Hello, ' + name\n",
+                          "new_text": "    # Friendlier, with an f-string.\n    return f'Hello, {name}!'\n"}}.get(name, {})
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -59,7 +68,8 @@ class Handler(BaseHTTPRequestHandler):
         messages = body.get("messages", [])
         user_text = last_user_text(messages)
         after_tool = bool(messages) and messages[-1].get("role") == "tool"
-        tool = pick_tool(body.get("tools") or []) if "tool" in user_text.lower() and not after_tool else None
+        wants_tool = any(word in user_text.lower() for word in ("tool", "write a file", "edit the file"))
+        tool = pick_tool(body.get("tools") or [], user_text) if wants_tool and not after_tool else None
         sys.stderr.write(f"stub_llm: {len(messages)} messages, stream={body.get('stream')}, tool={tool and tool['function']['name']}\n")
 
         if tool is not None:
