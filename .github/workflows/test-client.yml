@@ -10,12 +10,14 @@ on:
     paths:
       - 'client/**'
       - 'system_files/usr/share/nanoborealis/image/Containerfile'
+      - 'system_files/usr/libexec/nanoborealis-remote'
       - '.github/workflows/test-client.yml'
   pull_request:
     branches:
       - main
     paths:
       - 'client/**'
+      - 'system_files/usr/libexec/nanoborealis-remote'
   workflow_dispatch:
 
 jobs:
@@ -33,7 +35,7 @@ jobs:
           version="$(sed -n 's/^ARG NANOBOT_VERSION=//p' system_files/usr/share/nanoborealis/image/Containerfile)"
           echo "nanobot $version"
           python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install --quiet "nanobot-ai==$version" "websockets>=13" "flet==1.0.1" "zeroconf>=0.130"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "nanobot-ai==$version" "websockets>=14" "flet==1.0.1" "zeroconf>=0.130"
 
       - name: Start the stand-in model and a gateway
         working-directory: client
@@ -46,8 +48,23 @@ jobs:
           done
           curl -sf -o /dev/null http://127.0.0.1:18791/health
 
-      - name: Protocol checks
-        run: '"$RUNNER_TEMP/venv/bin/python" client/dev/smoke.py http://127.0.0.1:18765 test-password'
+      # The OS's remote-access service in front of the gateway, as on a NanoBorealis computer; in
+      # test mode it writes each PIN to a file instead of the screen.
+      - name: Start the remote-access service
+        run: |
+          mkdir -p "$RUNNER_TEMP/remote"
+          NANOBOREALIS_REMOTE_PORT=18866 NANOBOREALIS_REMOTE_UPSTREAM_PORT=18765 \
+          NANOBOREALIS_REMOTE_STATE="$RUNNER_TEMP/remote" NANOBOREALIS_REMOTE_TEST_SECRET=test-password \
+          NANOBOREALIS_REMOTE_TEST_PIN_FILE="$RUNNER_TEMP/pin" \
+            nohup python3 system_files/usr/libexec/nanoborealis-remote > "$RUNNER_TEMP/remote.log" 2>&1 &
+          for i in $(seq 1 30); do grep -q 'paired devices on port' "$RUNNER_TEMP/remote.log" && break; sleep 1; done
+          cat "$RUNNER_TEMP/remote.log"
+
+      - name: Pairing, and what it turns away
+        run: '"$RUNNER_TEMP/venv/bin/python" client/dev/pairing_check.py 127.0.0.1:18866 "$RUNNER_TEMP/pin" "$RUNNER_TEMP/paired.json"'
+
+      - name: Protocol checks, as a paired device over TLS
+        run: '"$RUNNER_TEMP/venv/bin/python" client/dev/smoke.py "$RUNNER_TEMP/paired.json"'
 
       - name: Compute sharing, end to end through a relay
         working-directory: client
@@ -62,14 +79,21 @@ jobs:
             curl -sf http://127.0.0.1:18792/health >/dev/null && break
             sleep 1
           done
-          "$RUNNER_TEMP/venv/bin/python" dev/compute_smoke.py http://127.0.0.1:18766 test-password
+          mkdir -p "$RUNNER_TEMP/remote2"
+          NANOBOREALIS_REMOTE_PORT=18867 NANOBOREALIS_REMOTE_UPSTREAM_PORT=18766 \
+          NANOBOREALIS_REMOTE_STATE="$RUNNER_TEMP/remote2" NANOBOREALIS_REMOTE_TEST_SECRET=test-password \
+          NANOBOREALIS_REMOTE_TEST_PIN_FILE="$RUNNER_TEMP/pin2" \
+            nohup python3 ../system_files/usr/libexec/nanoborealis-remote > "$RUNNER_TEMP/remote2.log" 2>&1 &
+          for i in $(seq 1 30); do grep -q 'paired devices on port' "$RUNNER_TEMP/remote2.log" && break; sleep 1; done
+          "$RUNNER_TEMP/venv/bin/python" dev/compute_smoke.py 127.0.0.1:18867 "$RUNNER_TEMP/pin2"
 
       - name: The UI module loads
         working-directory: client/src
         run: '"$RUNNER_TEMP/venv/bin/python" -c "import main; print(\"ok\")"'
 
-      - name: Gateway log
+      - name: Gateway and remote-access logs
         if: always()
         run: |
           tail -n 80 "$RUNNER_TEMP/gateway.log" || true
           tail -n 20 "$RUNNER_TEMP/stub.log" || true
+          tail -n 40 "$RUNNER_TEMP/remote.log" "$RUNNER_TEMP/remote2.log" || true

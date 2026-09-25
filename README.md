@@ -68,7 +68,7 @@ systemctl reboot
 nanoborealis help           # everything below, and more
 nanoborealis update         # see what's new, then install it at the next reboot
 nanoborealis rollback       # go back to the previous version
-nanoborealis remote on      # use the agent from your other devices
+nanoborealis devices        # devices paired with the NanoBorealis app (pair: pick this computer in the app)
 nanoborealis compute list   # devices lending their hardware to the agent
 nanoborealis pool join      # pool this computer with others to run bigger models
 ```

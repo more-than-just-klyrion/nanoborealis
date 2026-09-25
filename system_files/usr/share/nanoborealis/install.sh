@@ -187,6 +187,15 @@ else
     printf '%s' "$webui_pw" | as_agent podman secret create nanobot_webui_secret - >/dev/null
     ok "generated a WebUI password"
 fi
+# Paired devices reach the WebUI through the remote-access service, which supplies this password
+# for them (they have their own), so it keeps a copy only root can read.
+if systemctl cat nanoborealis-remote.service >/dev/null 2>&1; then
+    sudo install -d -m 0700 /var/lib/nanoborealis /var/lib/nanoborealis/remote
+    as_agent podman secret inspect --showsecret --format '{{.SecretData}}' nanobot_webui_secret \
+        | sudo tee /var/lib/nanoborealis/remote/webui-secret >/dev/null
+    sudo chmod 0600 /var/lib/nanoborealis/remote/webui-secret
+    sudo systemctl try-restart nanoborealis-remote.service
+fi
 
 # --- service -------------------------------------------------------------------
 say "Service"
@@ -268,11 +277,11 @@ fi
 
 # --- done ----------------------------------------------------------------------
 say "Done"
-echo "    Open:      $WEBUI_URL   (or 'NanoBorealis' in the app menu)"
+echo "    Open:      'NanoBorealis' in the app menu   ($WEBUI_URL)"
 echo "    Projects:  ~/nanoborealis-projects   (shared with the agent)"
-if [ -n "$webui_pw" ]; then
-    echo "    Password:  $webui_pw"
-    echo "               save it now; show it again later with: nanoborealis password"
+if systemctl is-enabled --quiet nanoborealis-remote.service 2>/dev/null; then
+    echo "    Devices:   in the NanoBorealis app on your phone or PC, pick this computer. It shows a"
+    echo "               PIN here; type it into the app to pair. No passwords to copy."
 fi
 echo "    Manage:    nanoborealis help"
 echo

@@ -115,7 +115,7 @@ jobs:
         working-directory: client/src
         run: |
           printf 'VERSION = "%s"\n' "$VERSION" > version.py  # the app compares this with newer releases
-          python -m pip install --quiet "flet[desktop]==1.0.1" "flet-cli==1.0.1" "websockets>=13" "zeroconf>=0.130" pyinstaller pillow
+          python -m pip install --quiet "flet[desktop]==1.0.1" "flet-cli==1.0.1" "websockets>=14" "zeroconf>=0.130" pyinstaller pillow
           sep=":"; icon=assets/icon.png; layout=--onedir
           if [ "$RUNNER_OS" = Windows ]; then sep=";"; icon=assets/icon.ico; fi
           if [ "$RUNNER_OS" = macOS ]; then layout=""; fi  # an .app is a folder already

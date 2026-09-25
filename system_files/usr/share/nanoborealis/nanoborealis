@@ -23,8 +23,9 @@ Usage: $(basename "$0") <command>
   logs              follow the agent's logs
   restart           restart the agent (fresh container, same memory and settings)
   shell             open a shell inside the agent's container
-  password          show the WebUI password
-  remote on|off     let other devices on your network use the agent (NanoBorealis client, browser)
+  password          show the WebUI password (for the agent's page in a browser on this computer)
+  remote on|off     let the NanoBorealis app on your other devices pair with this computer (on by default)
+  devices           list the devices paired with this computer; `devices remove <id>` unpairs one
   compute ...       run the agent on models hosted by your other devices: add, remove, use, list
   pool ...          pool this computer with others on your network to run models none could alone:
                     join [--private NAME], serve MODEL, stop MODEL, status, logs, leave
@@ -307,61 +308,93 @@ case "$cmd" in
         as_agent podman secret inspect --showsecret --format '{{.SecretData}}' nanobot_webui_secret
         echo ;;
     remote)
-        quadlet="$AGENT_HOME/.config/containers/systemd/nanobot.container"
-        sudo test -f "$quadlet" || { echo "the agent's service file is missing; reinstall with: bash /usr/share/nanoborealis/install.sh" >&2; exit 1; }
+        # The NanoBorealis app pairs with this computer through nanoborealis-remote.service: a PIN
+        # on this screen, then TLS and a password of its own for each device. The agent's WebUI
+        # itself stays on this computer only.
+        announce=/etc/avahi/services/nanoborealis.service
+        quadlet="${AGENT_HOME:-}/.config/containers/systemd/nanobot.container"
         firewalld_port() {  # add|remove; no-op when firewalld isn't running
             if sudo firewall-cmd --state >/dev/null 2>&1; then
-                sudo firewall-cmd --quiet --permanent "--$1-port=8765/tcp" || true
+                sudo firewall-cmd --quiet --permanent "--$1-port=8766/tcp" || true
                 [ "$1" = add ] && { sudo firewall-cmd --quiet --permanent --add-service=mdns || true; }
                 sudo firewall-cmd --quiet --reload
             fi
         }
-        # Announced over mDNS (Avahi), so NanoBorealis clients on the network find this machine.
-        announce=/etc/avahi/services/nanoborealis.service
         case "${2:-status}" in
             on)
-                sudo sed -i 's|^PublishPort=.*|PublishPort=8765:8765|' "$quadlet"
-                firewalld_port add
-                agentctl daemon-reload
-                agentctl restart nanobot.service
-                if [ -d /etc/avahi/services ]; then
-                    sudo tee "$announce" >/dev/null <<'XML'
-<?xml version="1.0" standalone="no"?>
-<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
-<service-group>
-  <name replace-wildcards="yes">NanoBorealis on %h</name>
-  <service>
-    <type>_nanoborealis._tcp</type>
-    <port>8765</port>
-    <txt-record>path=/</txt-record>
-    <txt-record>protocol=nanobot-webui</txt-record>
-  </service>
-</service-group>
-XML
-                    sudo systemctl is-active --quiet avahi-daemon || sudo systemctl enable --now avahi-daemon || true
-                    echo "Announced on the network: NanoBorealis clients here will list this machine."
+                # Setups from before pairing opened the WebUI to the network with a password;
+                # the pairing service replaces that.
+                if agent_installed && sudo grep -q '^PublishPort=8765:8765$' "$quadlet" 2>/dev/null; then
+                    sudo sed -i 's|^PublishPort=.*|PublishPort=127.0.0.1:8765:8765|' "$quadlet"
+                    agentctl daemon-reload
+                    agentctl restart nanobot.service
+                    sudo firewall-cmd --quiet --permanent --remove-port=8765/tcp 2>/dev/null || true
                 fi
-                echo "Other devices on your network can now reach the agent at:"
-                ip -4 -o addr show scope global | awk '{ split($4, a, "/"); print "  http://" a[1] ":8765" }'
-                echo "Sign in with the password from '$(basename "$0") password'."
-                echo "The connection is plain HTTP, so anyone watching this network could read that"
-                echo "password. Only turn this on for networks you trust."
-                ;;
+                sudo systemctl enable --now nanoborealis-remote.service
+                firewalld_port add
+                if [ -d /etc/avahi/services ]; then
+                    sudo install -m 0644 /usr/share/nanoborealis/avahi-service.xml "$announce"
+                    sudo systemctl is-active --quiet avahi-daemon || sudo systemctl enable --now avahi-daemon || true
+                fi
+                echo "Remote access is on. In the NanoBorealis app on your phone or PC, pick this computer:"
+                echo "it shows a 6-digit PIN here, and typing it into the app pairs that device."
+                echo "Connections are encrypted, and each paired device has its own password."
+                echo "'$(basename "$0") devices' lists paired devices." ;;
             off)
-                sudo sed -i 's|^PublishPort=.*|PublishPort=127.0.0.1:8765:8765|' "$quadlet"
-                firewalld_port remove
+                sudo systemctl disable --now nanoborealis-remote.service
                 sudo rm -f "$announce"
-                agentctl daemon-reload
-                agentctl restart nanobot.service
-                echo "The agent is reachable from this computer only." ;;
+                echo "Remote access is off: the agent is reachable from this computer only."
+                echo "Paired devices stay paired and connect again when it's back on." ;;
             status)
-                if sudo grep -q '^PublishPort=127\.0\.0\.1:' "$quadlet"; then
-                    echo "remote access is off: only this computer can reach the agent"
+                if systemctl is-active --quiet nanoborealis-remote.service; then
+                    echo "remote access is on: the NanoBorealis app on your devices can pair and connect (port 8766)"
                 else
-                    echo "remote access is on: devices on your network can reach the agent on port 8765"
+                    echo "remote access is off: only this computer can reach the agent"
                 fi ;;
             *)
                 echo "usage: $(basename "$0") remote on|off|status" >&2
+                exit 2 ;;
+        esac ;;
+    devices)
+        registry=/var/lib/nanoborealis/remote/devices.json
+        case "${2:-list}" in
+            list)
+                sudo python3 - "$registry" <<'PY'
+import json, sys, time
+try:
+    devices = json.load(open(sys.argv[1]))
+except FileNotFoundError:
+    devices = {}
+if not devices:
+    print("No devices are paired yet. Open the NanoBorealis app on your phone or PC and pick this computer.")
+for device_id, d in sorted(devices.items(), key=lambda item: item[1].get("paired", 0)):
+    day = lambda t: time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
+    print(f"{device_id}  {d.get('name', '?')}\n          paired {day(d.get('paired', 0))}, "
+          f"last seen {day(d.get('seen', 0))} from {d.get('address', '?')}")
+PY
+                ;;
+            remove)
+                device="${3:-}"
+                [[ "$device" =~ ^[0-9a-f]{8}$ ]] || { echo "usage: $(basename "$0") devices remove <id>   (ids from: $(basename "$0") devices)" >&2; exit 2; }
+                sudo python3 - "$registry" "$device" <<'PY'
+import json, os, sys
+path, device = sys.argv[1], sys.argv[2]
+try:
+    devices = json.load(open(path))
+except FileNotFoundError:
+    devices = {}
+if device not in devices:
+    sys.exit(f"no paired device {device}")
+name = devices.pop(device).get("name", device)
+with open(path + ".tmp", "w") as f:
+    json.dump(devices, f, indent=2)
+os.chmod(path + ".tmp", 0o600)
+os.replace(path + ".tmp", path)
+print(f"unpaired {name}: it can't reach this computer anymore")
+PY
+                ;;
+            *)
+                echo "usage: $(basename "$0") devices [list|remove <id>]" >&2
                 exit 2 ;;
         esac ;;
     compute)

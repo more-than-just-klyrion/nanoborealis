@@ -1,7 +1,9 @@
 """Finds NanoBorealis machines on the local network, the way computers find printers (mDNS).
 
-A NanoBorealis machine announces `_nanoborealis._tcp` while remote access is on
-(`nanoborealis remote on`). Nothing here imports Flet.
+A NanoBorealis machine announces `_nanoborealis._tcp` while remote access is on (the default;
+`nanoborealis remote on|off`), with the port where it pairs devices. Machines set up before
+pairing announced the WebUI's own port, 8765, instead; the app pairs on 8766 either way.
+Nothing here imports Flet.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import time
 from dataclasses import dataclass
 
 SERVICE = "_nanoborealis._tcp.local."
+PAIR_PORT = 8766
 
 
 @dataclass(frozen=True)
@@ -18,10 +21,6 @@ class Found:
     host: str  # laptop.local
     address: str
     port: int
-
-    @property
-    def url(self) -> str:
-        return f"http://{self.address}:{self.port}"
 
 
 def browse(seconds: float = 3.0) -> list[Found]:
@@ -48,7 +47,8 @@ def browse(seconds: float = 3.0) -> list[Found]:
             if not info or not addresses:
                 return
             label = name[: -len(type_) - 1] if name.endswith("." + type_) else name
-            found[name] = Found(label, (info.server or "").rstrip("."), addresses[0], info.port or 8765)
+            port = info.port if info.port and info.port != 8765 else PAIR_PORT
+            found[name] = Found(label, (info.server or "").rstrip("."), addresses[0], port)
 
     try:
         zc = Zeroconf(ip_version=IPVersion.V4Only)

@@ -1,8 +1,10 @@
 """Talks to a NanoBorealis agent over the nanobot gateway's WebUI protocol.
 
-Same flow as nanobot's own WebUI: GET /webui/bootstrap with the WebUI password returns a
-one-time WebSocket token and a short-lived REST token, then typed JSON envelopes travel
-over the WebSocket in both directions. Nothing here imports Flet, so the protocol can be
+Same flow as nanobot's own WebUI: GET /webui/bootstrap returns a one-time WebSocket token and a
+short-lived REST token, then typed JSON envelopes travel over the WebSocket in both directions.
+The computer's remote-access service sits in front: every request goes over TLS pinned to the
+paired computer's certificate and carries this device's password (see pairing.py), and the
+service supplies the WebUI's own password. Nothing here imports Flet, so the protocol can be
 exercised on its own (see dev/smoke.py).
 """
 
@@ -10,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -21,33 +24,24 @@ from typing import Any
 
 import websockets
 
-DEFAULT_PORT = 8765
+from pairing import DEVICE_HEADER, Machine
+
 SESSION_KEY_PREFIX = "websocket:"  # nanobot stores WebUI chats as "websocket:<chat_id>"
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class AuthError(Exception):
-    """The agent rejected the password."""
+    """The computer doesn't accept this device (never paired, or removed), or isn't the one it paired with."""
 
 
 class LinkError(Exception):
     """The agent could not be reached, or answered with something unexpected."""
 
 
-def normalize_address(raw: str) -> str:
-    """'192.168.1.20' -> 'http://192.168.1.20:8765'. Full URLs are kept as given."""
-    text = raw.strip().rstrip("/")
-    if not text:
-        raise ValueError("Enter the agent's address.")
-    if "://" not in text:
-        parts = urllib.parse.urlsplit(f"http://{text}")
-        netloc = parts.netloc if parts.port else f"{parts.netloc}:{DEFAULT_PORT}"
-        text = f"http://{netloc}{parts.path}"
-    parts = urllib.parse.urlsplit(text)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise ValueError("Use an address like 192.168.1.20 or http://host:8765.")
-    return text
+NOT_PAIRED = "This computer doesn't know this device anymore. Pair it again."
+WRONG_COMPUTER = ("The computer at this address isn't the one this app paired with. If you reinstalled it, "
+                  "pair again.")
 
 
 def _with_query(url: str, **params: str) -> str:
@@ -56,19 +50,21 @@ def _with_query(url: str, **params: str) -> str:
     return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
 
 
-def _get_json(url: str, bearer: str, timeout: float = 15) -> Any:
-    request = urllib.request.Request(
-        url, headers={"Authorization": f"Bearer {bearer}", "Accept": "application/json"}
-    )
+def _get_json(url: str, headers: dict[str, str], context: ssl.SSLContext, timeout: float = 15) -> Any:
+    request = urllib.request.Request(url, headers={"Accept": "application/json", **headers})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            raise AuthError("The agent rejected that password.") from e
+            raise AuthError(NOT_PAIRED) from e
+        if e.code == 502:
+            raise LinkError("The agent isn't running on that computer yet.") from e
         raise LinkError(f"The agent answered HTTP {e.code} for {urllib.parse.urlsplit(url).path}.") from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         reason = getattr(e, "reason", e)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            raise AuthError(WRONG_COMPUTER) from e
         raise LinkError(f"Cannot reach the agent: {reason}") from e
     except json.JSONDecodeError as e:
         raise LinkError("The agent's answer was not JSON. Is this a NanoBorealis address?") from e
@@ -86,9 +82,11 @@ class Bootstrap:
 class AgentLink:
     """One client connection to the agent. Call run() in a task; it reconnects by itself."""
 
-    def __init__(self, address: str, password: str, on_event: EventHandler, *, client_id: str | None = None):
-        self.base_url = normalize_address(address)
-        self._password = password
+    def __init__(self, machine: Machine, on_event: EventHandler, *, client_id: str | None = None):
+        self.machine = machine
+        self.base_url = machine.base_url
+        self._context = machine.context()
+        self._device = {DEVICE_HEADER: machine.password}
         self._on_event = on_event
         self.client_id = client_id or f"nanoborealis-client-{uuid.uuid4().hex[:12]}"
         self.model_name: str | None = None
@@ -108,15 +106,17 @@ class AgentLink:
     # -- HTTP ----------------------------------------------------------------
 
     async def bootstrap(self) -> Bootstrap:
-        data = await asyncio.to_thread(_get_json, f"{self.base_url}/webui/bootstrap", self._password)
+        data = await asyncio.to_thread(_get_json, f"{self.base_url}/webui/bootstrap", self._device, self._context)
         token = data.get("token") if isinstance(data, dict) else None
         if not isinstance(token, str) or not token:
             raise LinkError("The agent did not issue a connection token.")
-        ws_url = data.get("ws_url")
-        if not isinstance(ws_url, str) or not ws_url.startswith(("ws://", "wss://")):
-            parts = urllib.parse.urlsplit(self.base_url)
-            scheme = "wss" if parts.scheme == "https" else "ws"
-            ws_url = f"{scheme}://{parts.netloc}{data.get('ws_path') or '/'}"
+        # The WebSocket goes to the address this app used, over TLS: the agent behind the
+        # remote-access service can't know either, so only its path is taken.
+        given = data.get("ws_url")
+        path = urllib.parse.urlsplit(given) if isinstance(given, str) and "://" in given else \
+            urllib.parse.urlsplit(str(data.get("ws_path") or "/"))
+        ws_url = urllib.parse.urlunsplit(
+            ("wss", urllib.parse.urlsplit(self.base_url).netloc, path.path or "/", path.query, ""))
         expires_in = float(data.get("expires_in") or 300)
         api_token = data.get("api_token") if isinstance(data.get("api_token"), str) else None
         if api_token:
@@ -130,7 +130,8 @@ class AgentLink:
             await self.bootstrap()
         if not self._api_token:
             raise LinkError("The agent did not issue an API token.")
-        return await asyncio.to_thread(_get_json, f"{self.base_url}{path}", self._api_token)
+        headers = {**self._device, "Authorization": f"Bearer {self._api_token}"}
+        return await asyncio.to_thread(_get_json, f"{self.base_url}{path}", headers, self._context)
 
     async def list_chats(self) -> list[dict[str, Any]]:
         """Saved WebUI chats, newest first. Each row carries 'chat_id' plus nanobot's fields."""
@@ -159,7 +160,8 @@ class AgentLink:
                 boot = await self.bootstrap()
                 self.model_name = boot.model_name or self.model_name
                 url = _with_query(boot.ws_url, client_id=self.client_id, token=boot.ws_token)
-                async with websockets.connect(url, max_size=32 * 1024 * 1024, open_timeout=15) as ws:
+                async with websockets.connect(url, ssl=self._context, additional_headers=self._device,
+                                              max_size=32 * 1024 * 1024, open_timeout=15) as ws:
                     self._ws = ws
                     delay = 1.0
                     await self._emit({"event": "link_up", "model_name": self.model_name})
@@ -171,6 +173,12 @@ class AgentLink:
                     detail = "The agent closed the connection."
             except AuthError:
                 raise
+            except ssl.SSLCertVerificationError as e:
+                raise AuthError(WRONG_COMPUTER) from e
+            except websockets.InvalidStatus as e:
+                if e.response.status_code in (401, 403):
+                    raise AuthError(NOT_PAIRED) from e
+                detail = f"The agent answered HTTP {e.response.status_code}."
             except (LinkError, OSError, asyncio.TimeoutError, websockets.WebSocketException) as e:
                 detail = str(e) or type(e).__name__
             finally:

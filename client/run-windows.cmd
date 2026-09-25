@@ -20,7 +20,7 @@ if not exist "%VENV%\Scripts\pythonw.exe" (
 ) else (
   echo Updating the NanoBorealis client's packages...
 )
-"%VENV%\Scripts\python.exe" -m pip install --quiet --disable-pip-version-check "flet[desktop]==1.0.1" "websockets>=13" "zeroconf>=0.130" || goto :fail
+"%VENV%\Scripts\python.exe" -m pip install --quiet --disable-pip-version-check "flet[desktop]==1.0.1" "websockets>=14" "zeroconf>=0.130" || goto :fail
 >"%STAMP%" echo %DEPS%
 if not defined FIRST goto :run
 rem The first launch downloads Flet's window runtime; run it here so the progress shows.

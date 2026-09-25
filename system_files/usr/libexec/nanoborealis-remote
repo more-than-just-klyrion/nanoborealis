@@ -1,0 +1,531 @@
+#!/usr/bin/python3
+"""NanoBorealis remote access: pairs the NanoBorealis app with this computer, then lets paired
+devices reach the agent.
+
+It listens on port 8766 with TLS, in front of the agent's WebUI, which stays on 127.0.0.1:8765.
+
+Pairing takes a 6-digit PIN instead of a password. The app and this computer each pick a random
+number (the app commits to its number first), and both derive the PIN from the two numbers and
+this computer's TLS certificate. This computer shows the PIN on its screen. Typing it into the app
+proves that someone at this computer approves, and proves to the app that nothing in between is
+posing as this computer: an impostor has a different certificate, so the app would expect a
+different PIN. (It's the numeric comparison of Bluetooth pairing.) Then this computer generates a
+long random password for the device and sends it over the encrypted connection. The app keeps it,
+with this computer's certificate, and presents it on every connection; only a hash of it is kept
+here, in /var/lib/nanoborealis/remote/devices.json.
+
+Only paired devices get through to the agent. `nanoborealis devices` lists and removes them, and
+`nanoborealis remote off` stops this service.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import json
+import os
+import re
+import secrets
+import socket
+import ssl
+import subprocess
+import time
+from collections import deque
+from dataclasses import dataclass
+from pathlib import Path
+
+PORT = int(os.environ.get("NANOBOREALIS_REMOTE_PORT", "8766"))
+UPSTREAM_HOST = os.environ.get("NANOBOREALIS_REMOTE_UPSTREAM_HOST", "127.0.0.1")
+UPSTREAM_PORT = int(os.environ.get("NANOBOREALIS_REMOTE_UPSTREAM_PORT", "8765"))
+STATE = Path(os.environ.get("NANOBOREALIS_REMOTE_STATE", "/var/lib/nanoborealis/remote"))
+# For tests only: the WebUI password to use, and a file to write each PIN to instead of the screen.
+TEST_SECRET = os.environ.get("NANOBOREALIS_REMOTE_TEST_SECRET")
+TEST_PIN_FILE = os.environ.get("NANOBOREALIS_REMOTE_TEST_PIN_FILE")
+
+AGENT_USER = "nanobot-agent"
+DEVICE_HEADER = "x-nanoborealis-device"  # carries a paired device's password
+PAIR_SECONDS = 180  # how long a PIN is good for
+PIN_TRIES = 5  # wrong PINs before a pairing request is dropped
+# Pairing requests accepted from everyone together. A PIN has a million values; these limits keep
+# anyone from trying requests until one happens to produce a PIN they chose.
+STARTS_PER_MINUTE = 5
+STARTS_PER_HOUR = 30
+MAX_PENDING = 3
+HEAD_LIMIT = 64 * 1024
+BODY_LIMIT = 4096
+UPSTREAM_BOOTSTRAP = "/webui/bootstrap"  # the one WebUI path that takes the WebUI password
+
+
+def log(message: str) -> None:
+    print(f"nanoborealis-remote: {message}", flush=True)
+
+
+def pairing_pin(client_nonce: bytes, server_nonce: bytes, certificate_der: bytes) -> str:
+    """The PIN both sides derive. The app has the same function (client/src/pairing.py)."""
+    digest = hashlib.sha256(b"nanoborealis-pair-v1" + client_nonce + server_nonce
+                            + hashlib.sha256(certificate_der).digest()).digest()
+    return f"{int.from_bytes(digest[:8], 'big') % 1_000_000:06d}"
+
+
+# -- This computer's certificate --------------------------------------------------------------
+
+
+def certificate() -> tuple[Path, Path, bytes]:
+    """This computer's TLS certificate and key, made on first start. Returns their paths and
+    the certificate in DER form."""
+    cert, key = STATE / "cert.pem", STATE / "key.pem"
+    if not (cert.exists() and key.exists()):
+        STATE.mkdir(parents=True, exist_ok=True)
+        os.chmod(STATE, 0o700)
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+             "-nodes", "-keyout", str(key), "-out", str(cert), "-days", "36500", "-subj", "/CN=NanoBorealis"],
+            check=True, capture_output=True)
+        os.chmod(key, 0o600)
+        log("made this computer's TLS certificate")
+    return cert, key, ssl.PEM_cert_to_DER_cert(cert.read_text())
+
+
+# -- Paired devices ---------------------------------------------------------------------------
+
+
+class Devices:
+    """Paired devices in devices.json, re-read whenever it changes (`nanoborealis devices remove`
+    edits it). Only a hash of each device's password is kept."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.stamp: int | None = None
+        self.by_id: dict[str, dict] = {}
+        self.by_hash: dict[str, str] = {}
+
+    def load(self) -> None:
+        try:
+            stamp = self.path.stat().st_mtime_ns
+        except FileNotFoundError:
+            self.by_id, self.by_hash, self.stamp = {}, {}, None
+            return
+        if stamp == self.stamp:
+            return
+        try:
+            data = json.loads(self.path.read_text() or "{}")
+        except (OSError, ValueError) as e:
+            log(f"can't read {self.path}: {e}")
+            return
+        self.by_id = {k: v for k, v in data.items()
+                      if isinstance(v, dict) and isinstance(v.get("password_sha256"), str)}
+        self.by_hash = {v["password_sha256"]: k for k, v in self.by_id.items()}
+        self.stamp = stamp
+
+    def save(self) -> None:
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(self.by_id, indent=2) + "\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, self.path)
+        self.stamp = self.path.stat().st_mtime_ns
+
+    def find(self, password: str) -> str | None:
+        if not password:
+            return None
+        self.load()
+        return self.by_hash.get(hashlib.sha256(password.encode()).hexdigest())
+
+    def add(self, name: str, address: str) -> tuple[str, str]:
+        self.load()
+        device_id = secrets.token_hex(4)
+        password = secrets.token_urlsafe(32)  # 256 random bits
+        digest = hashlib.sha256(password.encode()).hexdigest()
+        now = int(time.time())
+        self.by_id[device_id] = {"name": name, "password_sha256": digest, "paired": now, "seen": now,
+                                 "address": address}
+        self.by_hash[digest] = device_id
+        self.save()
+        return device_id, password
+
+    def seen(self, device_id: str, address: str) -> None:
+        entry = self.by_id.get(device_id)
+        if entry is None:
+            return
+        now = int(time.time())
+        if now - int(entry.get("seen", 0)) > 600 or entry.get("address") != address:  # a note now and then
+            entry.update(seen=now, address=address)
+            self.save()
+
+    def remove(self, device_id: str) -> None:
+        self.load()
+        if self.by_id.pop(device_id, None) is not None:
+            self.by_hash = {v["password_sha256"]: k for k, v in self.by_id.items()}
+            self.save()
+
+
+devices = Devices(STATE / "devices.json")
+
+
+# -- The agent's WebUI password -----------------------------------------------------------------
+
+_webui_secret: str | None = None
+
+
+def webui_secret() -> str:
+    """The WebUI password, which paired devices never see: setup leaves a root-only copy here, and
+    an older setup's is read from the agent's secrets once."""
+    global _webui_secret
+    if TEST_SECRET is not None:
+        return TEST_SECRET
+    if _webui_secret:
+        return _webui_secret
+    copy = STATE / "webui-secret"
+    try:
+        _webui_secret = copy.read_text().strip() or None
+    except FileNotFoundError:
+        pass
+    if not _webui_secret:
+        import pwd
+        agent = pwd.getpwnam(AGENT_USER)
+        result = subprocess.run(
+            ["runuser", "-u", AGENT_USER, "--", "env", f"HOME={agent.pw_dir}",
+             f"XDG_RUNTIME_DIR=/run/user/{agent.pw_uid}",
+             "podman", "secret", "inspect", "--showsecret", "--format", "{{.SecretData}}", "nanobot_webui_secret"],
+            capture_output=True, text=True, timeout=60, cwd="/")
+        _webui_secret = result.stdout.strip() or None
+        if not _webui_secret:
+            raise RuntimeError(f"can't read the agent's WebUI password: {result.stderr.strip()[:200]}")
+        copy.write_text(_webui_secret)
+        os.chmod(copy, 0o600)
+    return _webui_secret
+
+
+def forget_webui_secret() -> None:
+    """The WebUI turned the password down: it was changed. Read it again next time."""
+    global _webui_secret
+    _webui_secret = None
+    (STATE / "webui-secret").unlink(missing_ok=True)
+
+
+# -- Showing the PIN ----------------------------------------------------------------------------
+
+
+def people_at_screen() -> list[tuple[str, int]]:
+    """Users signed in at this computer's own screen (not remotely, not the login screen)."""
+    try:
+        listing = subprocess.run(["loginctl", "list-sessions", "--no-legend"],
+                                 capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    sessions = []
+    for line in listing.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        shown = subprocess.run(
+            ["loginctl", "show-session", fields[0], "-p", "Type", "-p", "Class", "-p", "Remote",
+             "-p", "Active", "-p", "Name", "-p", "User"],
+            capture_output=True, text=True, timeout=10).stdout
+        props = dict(entry.split("=", 1) for entry in shown.splitlines() if "=" in entry)
+        if props.get("Type") in ("wayland", "x11") and props.get("Class") == "user" and props.get("Remote") != "yes":
+            sessions.append((props.get("Active") == "yes", props.get("Name", ""), int(props.get("User") or -1)))
+    active = {(name, uid) for is_active, name, uid in sessions if is_active}
+    return sorted(active or {(name, uid) for _, name, uid in sessions})
+
+
+def gvariant_string(text: str) -> str:
+    """A string as gdbus reads its arguments (GVariant text), so no name is taken for anything else."""
+    return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def show_pin(pin: str, device: str) -> bool:
+    """Put the PIN on this computer's screen, as a notification that stays until it's dismissed."""
+    if TEST_PIN_FILE:
+        Path(TEST_PIN_FILE).write_text(pin)
+        return True
+    title = f"Pairing PIN: {pin[:3]} {pin[3:]}"
+    body = (f"To let {device} connect to this computer, type this PIN into the NanoBorealis app. "
+            "If you didn't start this, ignore it.")
+    shown = False
+    for name, uid in people_at_screen():
+        bus = f"/run/user/{uid}/bus"
+        if not os.path.exists(bus):
+            continue
+        result = subprocess.run(
+            ["runuser", "-u", name, "--", "env", f"DBUS_SESSION_BUS_ADDRESS=unix:path={bus}",
+             "gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications",
+             "--object-path", "/org/freedesktop/Notifications", "--method", "org.freedesktop.Notifications.Notify",
+             gvariant_string("NanoBorealis"), "uint32 0", gvariant_string("nanoborealis"),
+             gvariant_string(title), gvariant_string(body), "@as []",
+             "{'urgency': <byte 2>, 'desktop-entry': <'nanoborealis'>}", f"int32 {PAIR_SECONDS * 1000}"],
+            capture_output=True, text=True, timeout=15, cwd="/")
+        if result.returncode == 0:
+            shown = True
+        else:
+            log(f"couldn't show the PIN to {name}: {result.stderr.strip()[:200]}")
+    return shown
+
+
+def clean_name(value: object) -> str:
+    """A device's name as it may appear in a notification: printable, no markup, not too long."""
+    if not isinstance(value, str):
+        return ""
+    text = re.sub(r"[^\w .,:()'@+-]", "", value, flags=re.UNICODE)
+    return " ".join(text.split())[:48]
+
+
+# -- Pairing ------------------------------------------------------------------------------------
+
+
+@dataclass
+class Request:
+    device: str
+    address: str
+    commit: str  # the hash of the app's random number
+    server_nonce: bytes
+    expires: float
+    pin: str | None = None
+    tries: int = 0
+
+
+pending: dict[str, Request] = {}
+starts: deque[float] = deque()
+MACHINE = socket.gethostname().split(".")[0]
+CERT_DER = b""
+
+
+def drop_expired() -> None:
+    now = time.monotonic()
+    for key in [key for key, request in pending.items() if request.expires < now]:
+        del pending[key]
+
+
+async def pair_start(data: dict, address: str) -> tuple[int, dict]:
+    device, commit = clean_name(data.get("device")), data.get("commit")
+    if not device or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{64}", commit):
+        return 400, {"error": "That isn't a pairing request."}
+    now = time.monotonic()
+    while starts and now - starts[0] > 3600:
+        starts.popleft()
+    if (len(pending) >= MAX_PENDING or len(starts) >= STARTS_PER_HOUR
+            or sum(1 for t in starts if now - t < 60) >= STARTS_PER_MINUTE):
+        return 429, {"error": "Too many pairing attempts. Wait a few minutes, then try again."}
+    starts.append(now)
+    key = secrets.token_urlsafe(16)
+    pending[key] = Request(device, address, commit, secrets.token_bytes(32), now + PAIR_SECONDS)
+    return 200, {"request": key, "server_nonce": pending[key].server_nonce.hex(), "expires_in": PAIR_SECONDS,
+                 "machine": MACHINE}
+
+
+async def pair_reveal(data: dict, address: str) -> tuple[int, dict]:
+    request = pending.get(str(data.get("request")))
+    if request is None:
+        return 404, {"error": "This pairing request has expired. Start again."}
+    if request.pin is not None:
+        return 409, {"error": "The PIN is already on the screen."}
+    try:
+        client_nonce = bytes.fromhex(str(data.get("client_nonce", "")))
+    except ValueError:
+        client_nonce = b""
+    if len(client_nonce) != 32 or hashlib.sha256(client_nonce).hexdigest() != request.commit:
+        pending.pop(str(data.get("request")), None)
+        return 400, {"error": "That doesn't match the pairing request."}
+    request.pin = pairing_pin(client_nonce, request.server_nonce, CERT_DER)
+    if not await asyncio.to_thread(show_pin, request.pin, request.device):
+        pending.pop(str(data.get("request")), None)
+        return 409, {"error": f"Nobody is signed in on {MACHINE} to see the PIN. Sign in there, then try again."}
+    log(f"showed a pairing PIN for {request.device} ({address})")
+    return 200, {"ok": True}
+
+
+async def pair_finish(data: dict, address: str) -> tuple[int, dict]:
+    key = str(data.get("request"))
+    request = pending.get(key)
+    if request is None or request.pin is None:
+        return 404, {"error": "This pairing request has expired. Start again."}
+    request.tries += 1
+    if not hmac.compare_digest(str(data.get("pin", "")).encode(), request.pin.encode()):
+        left = PIN_TRIES - request.tries
+        if left <= 0:
+            del pending[key]
+            log(f"too many wrong PINs from {request.device} ({address}); request dropped")
+            return 403, {"error": "Wrong PIN too many times. Start again.", "tries_left": 0}
+        return 403, {"error": "Wrong PIN.", "tries_left": left}
+    del pending[key]
+    device_id, password = devices.add(request.device, address)
+    log(f"paired {request.device} ({address}) as device {device_id}")
+    return 200, {"device_id": device_id, "password": password, "machine": MACHINE}
+
+
+# -- HTTP ---------------------------------------------------------------------------------------
+
+REASONS = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+           409: "Conflict", 429: "Too Many Requests", 502: "Bad Gateway"}
+
+
+def header(headers: list[tuple[str, str]], name: str) -> str:
+    return next((value for key, value in headers if key.lower() == name), "")
+
+
+async def reply(writer: asyncio.StreamWriter, status: int, payload: dict) -> None:
+    body = json.dumps(payload).encode()
+    writer.write(f"HTTP/1.1 {status} {REASONS.get(status, 'Error')}\r\nContent-Type: application/json\r\n"
+                 f"Content-Length: {len(body)}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".encode()
+                 + body)
+    try:
+        await writer.drain()
+    except (ConnectionError, ssl.SSLError, OSError):
+        pass
+
+
+def parse_head(raw: bytes) -> tuple[str, str, str, list[tuple[str, str]]]:
+    lines = raw.decode("latin-1").split("\r\n")
+    parts = lines[0].split(" ")
+    if len(parts) != 3 or not parts[2].startswith("HTTP/1.") or not parts[1].startswith("/"):
+        raise ValueError("not an HTTP request")
+    headers = []
+    for line in lines[1:]:
+        name, colon, value = line.partition(":")
+        if not colon or not name or name != name.strip() or any(c in name for c in " \t"):
+            raise ValueError("bad header")
+        headers.append((name, value.strip()))
+    return parts[0], parts[1], parts[2], headers
+
+
+async def local(method: str, path: str, headers: list[tuple[str, str]], reader: asyncio.StreamReader,
+                writer: asyncio.StreamWriter, address: str) -> None:
+    """This service's own endpoints: pairing, and unpairing a device."""
+    if method == "GET" and path == "/nanoborealis/hello":
+        return await reply(writer, 200, {"service": "nanoborealis-remote", "pairing": 1, "machine": MACHINE})
+    routes = {"/nanoborealis/pair/start": pair_start, "/nanoborealis/pair/reveal": pair_reveal,
+              "/nanoborealis/pair/finish": pair_finish}
+    if method != "POST" or (path not in routes and path != "/nanoborealis/unpair"):
+        return await reply(writer, 404, {"error": "Not found."})
+    try:
+        length = int(header(headers, "content-length") or 0)
+        if not 0 <= length <= BODY_LIMIT:
+            raise ValueError("too long")
+        data = json.loads(await asyncio.wait_for(reader.readexactly(length), 15) if length else b"{}")
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+    except (ValueError, asyncio.TimeoutError, asyncio.IncompleteReadError):
+        return await reply(writer, 400, {"error": "Bad request."})
+    if path == "/nanoborealis/unpair":
+        device_id = devices.find(header(headers, DEVICE_HEADER))
+        if device_id is None:
+            return await reply(writer, 401, {"error": "This device isn't paired with this computer."})
+        devices.remove(device_id)
+        log(f"device {device_id} unpaired itself")
+        return await reply(writer, 200, {"ok": True})
+    drop_expired()
+    status, payload = await routes[path](data, address)
+    await reply(writer, status, payload)
+
+
+async def pipe(source: asyncio.StreamReader, sink: asyncio.StreamWriter) -> None:
+    try:
+        while data := await source.read(65536):
+            sink.write(data)
+            await sink.drain()
+    except (ConnectionError, ssl.SSLError, OSError, asyncio.IncompleteReadError):
+        pass
+    finally:
+        try:
+            if sink.can_write_eof():
+                sink.write_eof()
+            else:
+                sink.close()
+        except (OSError, RuntimeError, ssl.SSLError):
+            pass
+
+
+async def proxy(method: str, target: str, version: str, headers: list[tuple[str, str]],
+                reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Pass a paired device's request on to the WebUI: one request per connection, or one
+    WebSocket. The device's password stays here; the WebUI's own password is added where it's needed."""
+    path = target.split("?", 1)[0]
+    upgrade = header(headers, "upgrade").lower() == "websocket"
+    kept = []
+    for name, value in headers:
+        lower = name.lower()
+        if lower == DEVICE_HEADER or (lower == "authorization" and path == UPSTREAM_BOOTSTRAP):
+            continue
+        if not upgrade and lower in ("connection", "keep-alive", "proxy-connection"):
+            continue
+        kept.append((name, value))
+    try:
+        if path == UPSTREAM_BOOTSTRAP:
+            kept.append(("Authorization", f"Bearer {await asyncio.to_thread(webui_secret)}"))
+    except (RuntimeError, OSError, KeyError, subprocess.SubprocessError) as e:
+        log(str(e))
+        return await reply(writer, 502, {"error": "The agent isn't set up on this computer yet."})
+    if not upgrade:
+        kept.append(("Connection", "close"))
+    head = f"{method} {target} {version}\r\n" + "".join(f"{n}: {v}\r\n" for n, v in kept) + "\r\n"
+    try:
+        up_reader, up_writer = await asyncio.wait_for(
+            asyncio.open_connection(UPSTREAM_HOST, UPSTREAM_PORT, limit=HEAD_LIMIT), 10)
+    except (OSError, asyncio.TimeoutError):
+        return await reply(writer, 502, {"error": "The agent isn't running on this computer."})
+    try:
+        up_writer.write(head.encode("latin-1"))
+        await up_writer.drain()
+        if path == UPSTREAM_BOOTSTRAP:
+            first = await up_reader.read(65536)
+            if first.startswith((b"HTTP/1.1 401", b"HTTP/1.0 401")):
+                forget_webui_secret()
+            writer.write(first)
+            await writer.drain()
+        await asyncio.gather(pipe(reader, up_writer), pipe(up_reader, writer))
+    except (ConnectionError, ssl.SSLError, OSError):
+        pass
+    finally:
+        up_writer.close()
+
+
+async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    address = str((writer.get_extra_info("peername") or ("?",))[0])
+    try:
+        try:
+            raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 30)
+            method, target, version, headers = parse_head(raw[:-4])
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError, ValueError,
+                ConnectionError, ssl.SSLError, OSError):
+            return
+        path = target.split("?", 1)[0]
+        if path.startswith("/nanoborealis/"):
+            return await local(method, path, headers, reader, writer, address)
+        device_id = devices.find(header(headers, DEVICE_HEADER))
+        if device_id is None:
+            return await reply(writer, 401, {"error": "This device isn't paired with this computer. "
+                                                      "Pair it from the NanoBorealis app."})
+        devices.seen(device_id, address)
+        await proxy(method, target, version, headers, reader, writer)
+    finally:
+        try:
+            writer.close()
+        except (OSError, RuntimeError, ssl.SSLError):
+            pass
+
+
+def quiet_tls_errors(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+    # Scanners and dropped connections fail the TLS handshake all the time; that's not news.
+    if isinstance(context.get("exception"), (ssl.SSLError, ConnectionError, TimeoutError)):
+        return
+    loop.default_exception_handler(context)
+
+
+async def main() -> None:
+    global CERT_DER
+    cert, key, CERT_DER = certificate()
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(cert, key)
+    asyncio.get_running_loop().set_exception_handler(quiet_tls_errors)
+    server = await asyncio.start_server(handle, host=None, port=PORT, ssl=context, limit=HEAD_LIMIT,
+                                        ssl_handshake_timeout=20)
+    devices.load()
+    log(f"pairing and paired devices on port {PORT} ({len(devices.by_id)} paired); certificate "
+        f"{hashlib.sha256(CERT_DER).hexdigest()[:16]}")
+    async with server:
+        await server.serve_forever()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

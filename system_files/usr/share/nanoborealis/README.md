@@ -12,6 +12,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 
 - **`nanobot-agent`**, an account that can't log in, owns nothing else, and runs the agent
 - **The agent:** nanobot 0.3.5 in a rootless Podman container that systemd runs through Quadlet. Its WebUI is at `http://127.0.0.1:8765`, behind a password, and in the app menu as **NanoBorealis**
+- **Pairing for your other devices:** the NanoBorealis app on a phone or PC pairs with a 6-digit PIN shown on this screen, then connects over TLS with a long password of its own (`nanoborealis-remote`, port 8766)
 - **Free Nemotron models with automatic fallback:** Ultra 550B, then Super 120B, then Lightning 30B
 - **Skills:** `code-review`, `debugging`, `git-workflow`, `new-project`, `planning`, `simplify`
 - **`/srv/nanoborealis/projects`**, shared by you and the agent, with a shortcut at `~/nanoborealis-projects`
@@ -33,7 +34,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 | One shared folder | The only host path the agent sees is the projects folder |
 | Network guard | `nanoborealis-firewall.service` loads at boot, before any user services start, and drops the agent's traffic to private, link-local, and CGNAT addresses. The only exceptions are devices you approve with `nanoborealis compute add`, each limited to one address and port, and, on a computer in a pool, this computer's pool relay, which offers chat only |
 | SELinux | Enforcing, and the projects folder is labeled for container use |
-| Loopback-only WebUI | Reachable only from this machine, and only with the password, until you run `nanoborealis remote on` |
+| Loopback-only WebUI | The agent's own page listens on this machine only. Other devices reach it only after pairing: `nanoborealis-remote` shows a 6-digit PIN on this screen, then lets that device in over TLS with a long password of its own |
 | Read-only OS | Aurora's system image can't be modified by anything the agent can reach |
 
 ## What it doesn't protect against
@@ -42,7 +43,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 - **Internet access is unrestricted.** The firewall stops the local network, not the internet.
 - **Free providers may log prompts.** Keep personal files and logged-in accounts off this machine.
 - **Secrets aren't encrypted at rest.** Podman keeps them in a file only `nanobot-agent` and root can read.
-- **Remote access is plain HTTP.** With `nanoborealis remote on`, the WebUI password crosses your network unencrypted. Only turn it on for networks you trust.
+- **A paired device is trusted like you.** Anyone who picks up a paired, unlocked phone or PC can chat with your agent. `nanoborealis devices remove <id>` unpairs a lost one. Pairing itself needs the PIN shown on this screen, so it can't happen without someone at this computer.
 - **A pool trusts its network.** exo has no password, so once a computer joins a pool, anyone on the network can use the pool and pick what it serves, which makes its computers download models. The node runs in its own account and container, away from your files and the agent. Only join on networks you trust, or join with `--private <name>`.
 
 ## Day to day
@@ -56,8 +57,9 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 | `nanoborealis status` / `logs` | Show whether the agent is running, or follow its logs |
 | `nanoborealis restart` | Restart the agent in a fresh container |
 | `nanoborealis shell` | Open a shell inside the agent's container |
-| `nanoborealis password` | Show the WebUI password |
-| `nanoborealis remote on` / `off` / `status` | Let other devices on your network use the agent through the NanoBorealis client or a browser, or go back to this machine only. While it's on, this machine announces itself over mDNS so clients find it without an address |
+| `nanoborealis password` | Show the WebUI password, which the agent's page asks for once in this computer's browser. The NanoBorealis app never needs it |
+| `nanoborealis remote on` / `off` / `status` | Let the NanoBorealis app on your other devices pair with this computer (on by default), or keep the agent to this machine only. While it's on, this machine announces itself over mDNS so the app finds it |
+| `nanoborealis devices` / `devices remove <id>` | List the devices paired with this computer, or unpair one |
 | `nanoborealis compute add` / `remove` / `use` / `list` | Run the agent on a model hosted by another device. The NanoBorealis client sets the device up and shows the exact `add` command; `use <name>` makes it the first choice, `use cloud` switches back |
 | `nanoborealis pool join` / `serve` / `stop` / `status` / `logs` / `leave` | Pool this computer with others on your network so together they run models too big for any one of them. See [Pooling computers](#pooling-computers) |
 | `nanoborealis set-key` | Swap the OpenRouter key |
@@ -87,4 +89,4 @@ Pools run on the processor today, which is slow for the agent's long prompts. A 
 
 - **Models:** **Settings → Models** in the WebUI. Changes are saved in the agent's home.
 - **nanobot version:** `nanoborealis rebuild 0.3.6`
-- **Use the agent from another device:** run `nanoborealis remote on`, then connect with the [NanoBorealis client](https://github.com/more-than-just-kyrion/nanoborealis/tree/main/client) or a browser at the address it prints. The password still applies. Reinstalling the agent turns remote access back off.
+- **Use the agent from another device:** open the [NanoBorealis app](https://github.com/more-than-just-kyrion/nanoborealis/tree/main/client) there and pick this computer. It shows a 6-digit PIN here; typing it into the app pairs that device, and from then on it connects by itself, encrypted.

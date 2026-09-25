@@ -6,10 +6,11 @@ two largest models too slow:
     STUB_INSTALLED=qwen3:30b STUB_SPEEDS="qwen3:30b=5,qwen3:14b=6,*=40" python dev/stub_ollama.py 18434 &
     python dev/compute_smoke.py
 
-With a gateway configured by dev/gateway-compute.json running, also pass its address and
-password to send a chat turn from nanobot through the relay:
+With a gateway configured by dev/gateway-compute.json running, and the remote-access service in
+front of it in test mode (see dev/pairing_check.py), also pass the service's address and PIN file
+to pair and send a chat turn from nanobot through the relay:
 
-    python dev/compute_smoke.py http://127.0.0.1:18766 test-password
+    python dev/compute_smoke.py 127.0.0.1:18867 /tmp/pin2
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import compute  # noqa: E402
 from agent_link import AgentLink  # noqa: E402
+from pairing import split_address  # noqa: E402
+from pairing_check import pair  # noqa: E402
 
 TOKEN = "test-device-token"
 RELAY_PORT = 18435
@@ -114,7 +117,9 @@ async def main() -> None:
             async def on_event(event: dict) -> None:
                 await events.put(event)
 
-            link = AgentLink(sys.argv[1], sys.argv[2], on_event)
+            host, port = split_address(sys.argv[1])
+            machine = await asyncio.to_thread(pair, host, port, sys.argv[2], "Compute check")
+            link = AgentLink(machine, on_event)
             runner = asyncio.create_task(link.run())
             try:
                 while (await asyncio.wait_for(events.get(), 30))["event"] != "link_up":

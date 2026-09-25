@@ -9,6 +9,7 @@ dnf5 install -y nftables
 
 chmod 0755 /usr/libexec/nanoborealis-firstrun \
            /usr/libexec/nanoborealis-firewall \
+           /usr/libexec/nanoborealis-remote \
            /usr/libexec/nanoborealis-migrate \
            /usr/libexec/nanoborealis-setup-from-stick \
            /usr/libexec/nanoborealis-relay \
@@ -22,6 +23,11 @@ ln -sf /usr/share/nanoborealis/nanoborealis /usr/bin/nanoaurora
 ln -sf /usr/share/nanoborealis/nanoborealis /usr/bin/nanobot-os
 
 systemctl enable nanoborealis-firewall.service nanoborealis-migrate.service nanoborealis-wifi-resume.service
+
+# Remote access: the NanoBorealis app pairs with a PIN shown on this screen, then connects over TLS
+# with a password of its own (nanoborealis-remote). Avahi announces the computer so the app finds it.
+systemctl enable nanoborealis-remote.service
+systemctl enable avahi-daemon.service
 
 # Updates are opt-in: machines only move to a newer build when their owner runs
 # `nanoborealis update`. Masking (not just disabling) keeps presets from re-enabling these.

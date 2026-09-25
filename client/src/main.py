@@ -23,6 +23,7 @@ import flet as ft
 
 import compute
 import discovery
+import pairing
 import stickmaker
 import updater
 from agent_link import AgentLink, AuthError, LinkError
@@ -34,8 +35,10 @@ SEED = ft.Colors.TEAL
 # Bundled in assets/fonts (SIL OFL): Flutter doesn't resolve a generic "monospace" family, so
 # code and tool output would otherwise come out in the proportional UI font.
 MONO = "JetBrains Mono"
-PREF_ADDRESS = "nanoborealis.address"
-PREF_PASSWORD = "nanoborealis.password"
+PREF_ADDRESS = "nanoborealis.address"  # the last address typed on the sign-in screen
+PREF_PASSWORD = "nanoborealis.password"  # before pairing: a WebUI password; cleared on start
+PREF_MACHINES = "nanoborealis.machines"  # JSON: the paired computers (pairing.Machine)
+PREF_LAST_MACHINE = "nanoborealis.last_machine"  # the one to connect to on start
 PREF_CLIENT_ID = "nanoborealis.client_id"
 PREF_COMPUTE = "nanoborealis.compute"  # JSON: consent, token, served model, speeds
 PREF_AUTO_UPDATE = "nanoborealis.auto_update"  # "1": install new app versions without asking
@@ -171,6 +174,9 @@ class NanoBorealisApp:
         self.link: AgentLink | None = None
         self.client_id = ""
         self.address = ""
+        self.machines: dict[str, pairing.Machine] = {}
+        self.machine: pairing.Machine | None = None
+        self.pairing: pairing.Pairing | None = None
         self.chat_id: str | None = None
         self.chats: list[dict[str, Any]] = []
         self.busy = False
@@ -212,19 +218,19 @@ class NanoBorealisApp:
         # Draw first: services such as SharedPreferences reach the device with the first
         # page update, and calling them before that waits for a listener that isn't there.
         self.show_connect()
-        self.address = await self.pref_get(PREF_ADDRESS)
-        password = await self.pref_get(PREF_PASSWORD)
         self.client_id = await self.pref_get(PREF_CLIENT_ID)
         if not self.client_id:
             self.client_id = f"nanoborealis-client-{uuid.uuid4().hex[:12]}"
             await self.pref_set(PREF_CLIENT_ID, self.client_id)
-        if self.address or password:
-            self.address_field.value = self.address
-            self.password_field.value = password
-            self.page.update()
+        await self.pref_set(PREF_PASSWORD, None)  # kept by versions before pairing; nothing uses it now
+        self.address = await self.pref_get(PREF_ADDRESS)
+        self.machines = await self.load_machines()
         self.page.run_task(self.check_for_update)
-        if self.address and password:
-            await self.connect(self.address, password, remember=True)
+        last = self.machines.get(await self.pref_get(PREF_LAST_MACHINE))
+        if last is not None:
+            await self.connect(last)
+        else:
+            self.show_connect()
 
     # -- App updates -------------------------------------------------------------
 
@@ -362,55 +368,75 @@ class NanoBorealisApp:
         except Exception as e:
             print(f"nanoborealis-client: could not save {key}: {e}")
 
-    def show_connect(self, address: str = "", password: str = "", error: str = "") -> None:
+    # -- Pairing and connecting -------------------------------------------------
+    # A NanoBorealis computer shows a 6-digit PIN when a device asks to pair; typing it here pairs
+    # this device for good (pairing.py). After that the app connects over TLS pinned to that
+    # computer's certificate, with a long password of this device's own. No password to copy.
+
+    async def load_machines(self) -> dict[str, pairing.Machine]:
+        try:
+            rows = json.loads(await self.pref_get(PREF_MACHINES) or "[]")
+        except ValueError:
+            rows = []
+        machines = {}
+        for row in rows if isinstance(rows, list) else []:
+            machine = pairing.Machine.from_json(row) if isinstance(row, dict) else None
+            if machine is not None:
+                machines[machine.key] = machine
+        return machines
+
+    async def save_machines(self) -> None:
+        await self.pref_set(PREF_MACHINES, json.dumps([m.to_json() for m in self.machines.values()]))
+
+    async def drop_machine(self, machine: pairing.Machine) -> None:
+        self.machines.pop(machine.key, None)
+        await self.save_machines()
+        if await self.pref_get(PREF_LAST_MACHINE) == machine.key:
+            await self.pref_set(PREF_LAST_MACHINE, None)
+
+    def show_connect(self, error: str = "", busy: str = "") -> None:
         self.in_chat_view = False
         self.page.drawer = None
         self.address_field = ft.TextField(
-            label="Agent address", hint_text="192.168.1.20 or host:8765", value=address,
-            prefix_icon=ft.Icons.LINK_ROUNDED, autofocus=not address, on_submit=self.on_connect_click,
+            label="Or type its address", hint_text="192.168.1.20 or laptop.local", value=self.address,
+            prefix_icon=ft.Icons.LINK_ROUNDED, on_submit=self.on_pair_address, expand=True, dense=True,
         )
-        self.password_field = ft.TextField(
-            label="WebUI password", value=password, password=True, can_reveal_password=True,
-            prefix_icon=ft.Icons.KEY_ROUNDED, autofocus=bool(address), on_submit=self.on_connect_click,
-        )
-        self.remember = ft.Checkbox(label="Remember on this device", value=True)
         self.found_status = ft.Text("Looking for NanoBorealis on your network...", size=12,
                                     color=ft.Colors.ON_SURFACE_VARIANT)
         self.found_row = ft.Row(wrap=True, spacing=8, run_spacing=8)
-        self.connect_error = ft.Text(error, color=ft.Colors.ERROR, size=13, visible=bool(error))
-        self.connect_button = ft.FilledButton("Connect", icon=ft.Icons.ARROW_FORWARD_ROUNDED,
-                                              height=44, on_click=self.on_connect_click)
-        self.connect_progress = ft.ProgressRing(width=20, height=20, stroke_width=2, visible=False)
+        self.connect_status = ft.Text(error or busy, color=ft.Colors.ERROR if error else ft.Colors.ON_SURFACE_VARIANT,
+                                      size=13, visible=bool(error or busy), expand=True)
+        self.connect_progress = ft.ProgressRing(width=18, height=18, stroke_width=2, visible=bool(busy))
         mono = ft.TextStyle(font_family=MONO, weight=ft.FontWeight.W_600)
         help_text = ft.Text(
             size=12, color=ft.Colors.ON_SURFACE_VARIANT,
             spans=[
-                ft.TextSpan("On the NanoBorealis machine, "),
-                ft.TextSpan("nanoborealis password", style=mono),
-                ft.TextSpan(" shows the password and "),
+                ft.TextSpan("Pick your NanoBorealis computer: it shows a 6-digit PIN on its screen, and typing "
+                            "it here pairs this device. Connections are encrypted. Not listed? Run "),
                 ft.TextSpan("nanoborealis remote on", style=mono),
-                ft.TextSpan(" lets other devices connect."),
+                ft.TextSpan(" there."),
             ],
         )
+        paired = [self.machine_row(m) for m in self.machines.values()]
         self.connect_card = ft.Container(
             width=self.card_width(),
             padding=28,
             border_radius=20,
             bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
             content=ft.Column(
-                tight=True, spacing=16,
+                tight=True, spacing=14,
                 controls=[
                     ft.Row([logo(44), ft.Column([
                         ft.Text("NanoBorealis", size=24, weight=ft.FontWeight.W_600),
                         ft.Text("Connect to your agent", color=ft.Colors.ON_SURFACE_VARIANT),
                     ], spacing=0, tight=True)], spacing=14),
+                    *([ft.Text("Your computers", size=12, color=ft.Colors.ON_SURFACE_VARIANT), *paired] if paired else []),
                     self.found_status,
                     self.found_row,
-                    self.address_field,
-                    self.password_field,
-                    self.remember,
-                    self.connect_error,
-                    ft.Row([self.connect_button, self.connect_progress], spacing=14),
+                    ft.Row([self.address_field,
+                            ft.IconButton(ft.Icons.ARROW_FORWARD_ROUNDED, tooltip="Pair",
+                                          on_click=self.on_pair_address)], spacing=4),
+                    ft.Row([self.connect_progress, self.connect_status], spacing=10),
                     help_text,
                     ft.Divider(height=1),
                     ft.TextButton("No NanoBorealis computer yet? Make an install stick",
@@ -422,20 +448,41 @@ class NanoBorealisApp:
         self.page.add(ft.Container(content=self.connect_card, alignment=ft.Alignment.CENTER, expand=True, padding=16))
         self.page.run_task(self.find_machines, self.found_row)
 
+    def machine_row(self, machine: pairing.Machine) -> ft.Control:
+        return ft.Container(
+            border_radius=12, ink=True, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
+            padding=ft.Padding.only(left=14, right=4, top=6, bottom=6),
+            on_click=on(self.connect, machine),
+            content=ft.Row([
+                ft.Icon(ft.Icons.COMPUTER_ROUNDED, color=ft.Colors.PRIMARY),
+                ft.Column([
+                    ft.Text(machine.name, weight=ft.FontWeight.W_600),
+                    ft.Text(f"{machine.host} · paired", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                ], spacing=0, tight=True, expand=True),
+                ft.IconButton(ft.Icons.LINK_OFF_ROUNDED, icon_size=18, tooltip="Forget this computer",
+                              on_click=on(self.forget_machine, machine)),
+            ], spacing=12),
+        )
+
     async def find_machines(self, row: ft.Row) -> None:
-        """List NanoBorealis machines announcing themselves on this network."""
+        """List NanoBorealis computers announcing themselves on this network."""
         found = await asyncio.to_thread(discovery.browse, 3.0)
         if self.in_chat_view or row is not self.found_row:
             return  # the sign-in screen was replaced meanwhile
+        paired_hosts = {m.host for m in self.machines.values()}
+        new = [f for f in found if f.address not in paired_hosts]
         row.controls = [
             ft.OutlinedButton(f"{f.name} ({f.address})", icon=ft.Icons.COMPUTER_ROUNDED, on_click=on(self.use_found, f))
-            for f in found
+            for f in new
         ]
         row.controls.append(ft.TextButton("Search again", icon=ft.Icons.REFRESH_ROUNDED,
                                           on_click=on(self.search_again)))
-        self.found_status.value = ("Found on your network:" if found else
-                                   "No NanoBorealis found on this network. Run nanoborealis remote on there, "
-                                   "or type its address.")
+        if new:
+            self.found_status.value = "Found on your network (click to pair):"
+        elif self.machines:
+            self.found_status.value = "No other NanoBorealis computers on this network."
+        else:
+            self.found_status.value = "No NanoBorealis found on this network. Type its address below."
         self.page.update()
 
     async def search_again(self) -> None:
@@ -444,43 +491,137 @@ class NanoBorealisApp:
         self.page.update()
         await self.find_machines(self.found_row)
 
-    async def use_found(self, found: discovery.Found) -> None:
-        self.address_field.value = f"{found.address}:{found.port}"
-        self.page.update()
-        await self.password_field.focus()
-        self.page.update()
-
     def card_width(self) -> float:
-        return min(440, max(280, (self.page.width or 440) - 32))
+        return min(460, max(280, (self.page.width or 460) - 32))
 
-    async def on_connect_click(self, _event=None) -> None:
-        await self.connect(self.address_field.value or "", self.password_field.value or "",
-                           remember=bool(self.remember.value))
-
-    async def connect(self, address: str, password: str, remember: bool) -> None:
-        self.connect_button.disabled = True
-        self.connect_progress.visible = True
-        self.connect_error.visible = False
+    def set_connect_status(self, text: str, error: bool = False, busy: bool = False) -> None:
+        self.connect_status.value = text
+        self.connect_status.color = ft.Colors.ERROR if error else ft.Colors.ON_SURFACE_VARIANT
+        self.connect_status.visible = bool(text)
+        self.connect_progress.visible = busy
         self.page.update()
-        error = ""
-        link = None
+
+    async def use_found(self, found: discovery.Found) -> None:
+        await self.pair_or_connect(found.address, found.port)
+
+    async def on_pair_address(self, _event=None) -> None:
+        raw = self.address_field.value or ""
         try:
-            if not password:
-                raise ValueError("Enter the WebUI password.")
-            link = AgentLink(address, password, self.on_event, client_id=self.client_id)
-            await link.bootstrap()  # fail fast on a wrong address or password
-        except (ValueError, AuthError, LinkError) as e:
-            error = str(e)
-        if error or link is None:
-            self.connect_button.disabled = False
-            self.connect_progress.visible = False
-            self.connect_error.value = error
-            self.connect_error.visible = True
+            host, port = pairing.split_address(raw)
+        except ValueError as e:
+            self.set_connect_status(str(e), error=True)
+            return
+        self.address = raw.strip()
+        await self.pref_set(PREF_ADDRESS, self.address)
+        await self.pair_or_connect(host, port)
+
+    async def pair_or_connect(self, host: str, port: int) -> None:
+        self.set_connect_status(f"Reaching {host}...", busy=True)
+        try:
+            key = await asyncio.to_thread(pairing.probe_key, host, port)
+        except pairing.PairingError as e:
+            self.set_connect_status(str(e), error=True)
+            return
+        known = self.machines.get(key)
+        if known is not None:  # paired before, and it has moved to this address
+            known.host, known.port = host, port
+            await self.save_machines()
+            await self.connect(known)
+            return
+        self.pairing = pairing.Pairing(host, port)
+        self.set_connect_status(f"Asking {host} to show a PIN...", busy=True)
+        try:
+            await asyncio.to_thread(self.pairing.start)
+            await asyncio.to_thread(self.pairing.reveal)
+        except pairing.PairingError as e:
+            self.pairing = None
+            self.set_connect_status(str(e), error=True)
+            return
+        self.show_pin_entry()
+
+    def show_pin_entry(self, error: str = "") -> None:
+        session = self.pairing
+        if session is None:
+            return
+        self.pin_field = ft.TextField(
+            label="PIN", hint_text="6 digits", max_length=6, keyboard_type=ft.KeyboardType.NUMBER,
+            autofocus=True, text_size=26, text_align=ft.TextAlign.CENTER, width=240, on_submit=self.on_pin_submit,
+        )
+        self.pin_status = ft.Text(error, color=ft.Colors.ERROR, size=13, visible=bool(error))
+        self.pin_progress = ft.ProgressRing(width=18, height=18, stroke_width=2, visible=False)
+        self.pin_button = ft.FilledButton("Pair", icon=ft.Icons.LINK_ROUNDED, height=44, on_click=self.on_pin_submit)
+        card = ft.Container(
+            width=self.card_width(), padding=28, border_radius=20, bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+            content=ft.Column(tight=True, spacing=16, horizontal_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+                ft.Icon(ft.Icons.PIN_ROUNDED, size=40, color=ft.Colors.PRIMARY),
+                ft.Text(f"Pair with {session.machine}", size=20, weight=ft.FontWeight.W_600),
+                ft.Text(f"A 6-digit PIN just appeared on {session.machine}'s screen. Type it here to pair "
+                        f"this device.", color=ft.Colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER),
+                self.pin_field,
+                self.pin_status,
+                ft.Row([ft.TextButton("Cancel", on_click=on(self.cancel_pairing)), self.pin_progress, self.pin_button],
+                       alignment=ft.MainAxisAlignment.CENTER, spacing=12),
+            ]),
+        )
+        self.page.controls.clear()
+        self.page.add(ft.Container(content=card, alignment=ft.Alignment.CENTER, expand=True, padding=16))
+        self.page.update()
+
+    async def on_pin_submit(self, _event=None) -> None:
+        session = self.pairing
+        pin = "".join(ch for ch in (self.pin_field.value or "") if ch.isdigit())
+        if session is None:
+            return
+        if len(pin) != 6:
+            self.pin_status.value = "The PIN has 6 digits."
+            self.pin_status.visible = True
             self.page.update()
             return
-        self.address = address.strip()
-        await self.pref_set(PREF_ADDRESS, self.address)
-        await self.pref_set(PREF_PASSWORD, password if remember else None)
+        self.pin_button.disabled = True
+        self.pin_progress.visible = True
+        self.pin_status.visible = False
+        self.page.update()
+        try:
+            machine = await asyncio.to_thread(session.finish, pin)
+        except pairing.WrongPin as e:
+            if "too many" in str(e).lower():
+                self.pairing = None
+                self.show_connect(str(e))
+            else:
+                self.show_pin_entry(str(e))
+            return
+        except pairing.PairingError as e:
+            self.pairing = None
+            self.show_connect(str(e))
+            return
+        self.pairing = None
+        self.machines[machine.key] = machine
+        await self.save_machines()
+        await self.connect(machine)
+
+    async def cancel_pairing(self) -> None:
+        self.pairing = None
+        self.show_connect()
+
+    async def forget_machine(self, machine: pairing.Machine) -> None:
+        await asyncio.to_thread(pairing.unpair, machine)  # best effort: it may be off
+        await self.drop_machine(machine)
+        self.show_connect(f"Forgot {machine.name}. Pick it again to pair.")
+
+    async def connect(self, machine: pairing.Machine) -> None:
+        self.show_connect(busy=f"Connecting to {machine.name}...")
+        link = AgentLink(machine, self.on_event, client_id=self.client_id)
+        try:
+            await link.bootstrap()  # fail fast when it's off, or doesn't know this device anymore
+        except AuthError as e:
+            await self.drop_machine(machine)
+            self.show_connect(f"{machine.name}: {e}")
+            return
+        except LinkError as e:
+            self.show_connect(f"{machine.name}: {e}")
+            return
+        await self.pref_set(PREF_LAST_MACHINE, machine.key)
+        self.machine = machine
         self.link = link
         self.was_up = False
         self.show_chat()
@@ -491,18 +632,19 @@ class NanoBorealisApp:
     async def keep_linked(self, link: AgentLink) -> None:
         try:
             await link.run()
-        except AuthError:
+        except AuthError as e:
             if self.link is link:
                 self.link = None
-                await self.pref_set(PREF_PASSWORD, None)
-                self.show_connect(self.address, "", "The agent no longer accepts this password. Enter the current one.")
+                await self.drop_machine(link.machine)
+                self.show_connect(f"{link.machine.name}: {e}")
 
     async def disconnect(self) -> None:
         link, self.link = self.link, None
         if link is not None:
             await link.close()
         self.chat_id = None
-        self.show_connect(self.address, await self.pref_get(PREF_PASSWORD))
+        await self.pref_set(PREF_LAST_MACHINE, None)  # don't connect by itself next time
+        self.show_connect()
 
     # -- Chat screen -----------------------------------------------------------
 
@@ -604,8 +746,9 @@ class NanoBorealisApp:
         bottom = ft.Container(
             padding=ft.Padding.only(left=16, right=8, top=4, bottom=12),
             content=ft.Row([
-                ft.Icon(ft.Icons.LINK_ROUNDED, size=16, color=ft.Colors.ON_SURFACE_VARIANT),
-                ft.Text(self.link.base_url if self.link else "", size=12, color=ft.Colors.ON_SURFACE_VARIANT,
+                ft.Icon(ft.Icons.LOCK_ROUNDED, size=16, color=ft.Colors.ON_SURFACE_VARIANT),
+                ft.Text(f"{self.machine.name} ({self.machine.host})" if self.machine else "", size=12,
+                        color=ft.Colors.ON_SURFACE_VARIANT, tooltip="Paired, and encrypted",
                         max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, expand=True),
                 ft.IconButton(ft.Icons.LOGOUT_ROUNDED, icon_size=18, tooltip="Disconnect", on_click=on(self.disconnect)),
             ], spacing=6),
@@ -1032,7 +1175,7 @@ class NanoBorealisApp:
 
     async def on_link_up(self) -> None:
         self.status_dot.bgcolor = ft.Colors.GREEN_400
-        self.status_dot.tooltip = f"Connected to {self.link.base_url if self.link else ''}"
+        self.status_dot.tooltip = f"Connected to {self.machine.name if self.machine else ''}, encrypted"
         self.banner.visible = False
         if self.link is not None:
             self.set_model(self.link.model_name)

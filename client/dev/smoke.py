@@ -1,24 +1,31 @@
 """End-to-end protocol check: drives a real nanobot gateway through agent_link.
 
-Start dev/stub_llm.py and a gateway whose custom provider points at it, then:
+Start dev/stub_llm.py, a gateway whose custom provider points at it, and the remote-access
+service in front of it; pair with dev/pairing_check.py, which saves the paired computer; then:
 
-    python dev/smoke.py http://127.0.0.1:8765 <webui-password>
+    python dev/smoke.py /tmp/paired.json
 
-Exits non-zero on the first failed check.
+Everything goes the way the app goes: TLS pinned to the computer's certificate, with the device's
+password. Exits non-zero on the first failed check.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from agent_link import AgentLink, AuthError  # noqa: E402
+from pairing import Machine  # noqa: E402
 
 
-async def main(address: str, password: str) -> None:
+async def main(machine_file: str) -> None:
+    with open(machine_file) as f:
+        machine = Machine.from_json(json.load(f))
+    assert machine is not None, f"{machine_file} doesn't hold a paired computer"
     events: asyncio.Queue[dict] = asyncio.Queue()
 
     async def on_event(event: dict) -> None:
@@ -37,15 +44,16 @@ async def main(address: str, password: str) -> None:
         if not ok:
             raise SystemExit(1)
 
-    # A wrong password must fail fast with AuthError, not retry forever.
-    bad = AgentLink(address, password + "-wrong", on_event)
+    # A device the computer doesn't know must fail fast with AuthError, not retry forever.
+    stranger = Machine(machine.host, machine.port, machine.name, machine.certificate, "unknown-device-" * 3, "0000")
+    bad = AgentLink(stranger, on_event)
     try:
         await asyncio.wait_for(bad.run(), 20)
-        check(False, "wrong password is rejected")
+        check(False, "an unknown device is turned away")
     except AuthError:
-        check(True, "wrong password is rejected")
+        check(True, "an unknown device is turned away")
 
-    link = AgentLink(address, password, on_event)
+    link = AgentLink(machine, on_event)
     runner = asyncio.create_task(link.run())
     try:
         await until("link_up", 30)
@@ -99,7 +107,7 @@ async def main(address: str, password: str) -> None:
         async def on_other(event: dict) -> None:
             other_events.append(event)
 
-        second = AgentLink(address, password, on_other)
+        second = AgentLink(machine, on_other)
         second_task = asyncio.create_task(second.run())
         for _ in range(100):
             if second.connected:
@@ -121,4 +129,4 @@ async def main(address: str, password: str) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1], sys.argv[2]))
+    asyncio.run(main(sys.argv[1]))

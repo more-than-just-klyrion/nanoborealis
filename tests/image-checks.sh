@@ -38,6 +38,16 @@ done
 expect "pool node service template" grep -q '^Image=ghcr.io/more-than-just-kyrion/nanoborealis-pool:' \
     /usr/share/nanoborealis/exo.container
 expect "pool relay service installed" test -f /usr/lib/systemd/system/nanoborealis-pool-relay.service
+# Pairing: the app's way in. A 6-digit PIN on this screen, then TLS and a password per device.
+expect "remote-access service is executable" test -x /usr/libexec/nanoborealis-remote
+expect "remote-access service compiles" python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' \
+    /usr/libexec/nanoborealis-remote
+expect "remote access is on by default" systemctl is-enabled nanoborealis-remote.service
+expect "Avahi announces the pairing port" grep -q '<port>8766</port>' /etc/avahi/services/nanoborealis.service
+expect "Avahi is enabled" systemctl is-enabled avahi-daemon.service
+for tool in openssl runuser loginctl gdbus; do
+    expect "$tool is present (pairing needs it)" command -v "$tool"
+done
 
 # The agent's and the pool node's service files must turn into services with this image's own
 # Podman: setup stops with "Quadlet did not turn the agent's service file into a service" otherwise.

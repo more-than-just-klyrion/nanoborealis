@@ -14,16 +14,13 @@ Your chats live on the NanoBorealis machine, so they carry over everywhere. A ch
 
 ## Connect it to your agent
 
-On the NanoBorealis machine:
+Pick your NanoBorealis computer in the app. The app finds computers on your network by itself (they announce themselves over mDNS, like printers), or you can type an address. The computer shows a **6-digit PIN** on its screen, and typing it into the app pairs this device. That's all: no passwords to copy.
 
-```bash
-nanoborealis remote on     # lets devices on your network reach the agent; prints its address
-nanoborealis password      # the password to sign in with
-```
+- **Encrypted.** Everything travels over TLS. While pairing, the app and the computer each pick a random number, and both work the PIN out from the two numbers and the computer's certificate. So a PIN that matches also proves to the app that nothing on the network is posing as your computer (the same numeric comparison Bluetooth pairing uses). From then on, the app trusts that computer's certificate and no other.
+- **A long password per device.** Once the PIN checks out, the computer generates a long random password for this device and sends it over the encrypted connection. The app keeps it in its local storage and presents it every time. The computer keeps only a hash. Each device has its own password, so removing one doesn't affect the others.
+- **Hard to guess.** A wrong PIN counts against the request (five tries), and the computer accepts only a few pairing requests a minute.
 
-The client lists NanoBorealis machines it finds on your network (they announce themselves over mDNS, like printers), so usually you just pick yours and enter the password. You can also type the address `remote on` printed.  **Remember on this device** stores both in the app's local storage, unencrypted, so only tick it on your own devices.
-
-The connection is plain HTTP. Anyone watching the network could read the password, so use remote access on networks you trust. `nanoborealis remote off` closes it again.
+On the computer, `nanoborealis devices` lists paired devices and `nanoborealis devices remove <id>` unpairs one. **Forget this computer** on the app's sign-in screen unpairs from the app side. Remote access is on by default; `nanoborealis remote off` turns it off, and `remote on` turns it back on.
 
 ## Make an install stick
 
@@ -83,7 +80,7 @@ flet build apk     # Android; `flet build ipa` for iPhone needs a Mac with Xcode
 
 `src/agent_link.py` handles the protocol and has no UI code:
 
-1. `GET /webui/bootstrap` with `Authorization: Bearer <password>` returns a one-time WebSocket token and a short-lived API token.
+1. `GET /webui/bootstrap` returns a one-time WebSocket token and a short-lived API token. Every request goes through the computer's remote-access service over TLS pinned to its certificate, with this device's password in `X-NanoBorealis-Device`; the service adds the WebUI's own password. `src/pairing.py` does the pairing.
 2. The WebSocket carries typed JSON envelopes: `new_chat`, `attach`, and `message` go out, and `delta`, `reasoning_delta`, `message`, `turn_end` and the rest come back.
 3. `GET /api/sessions` lists chats, and `GET /api/sessions/<key>/webui-thread` loads one.
 
@@ -91,15 +88,19 @@ flet build apk     # Android; `flet build ipa` for iPhone needs a Mac with Xcode
 
 ## Testing without spending tokens
 
-`dev/stub_llm.py` is a stand-in OpenAI-compatible model that streams canned Markdown, emits reasoning, and calls a tool when your message contains "tool". Point a real nanobot gateway at it, then run the protocol checks:
+`dev/stub_llm.py` is a stand-in OpenAI-compatible model that streams canned Markdown, emits reasoning, and calls a tool when your message contains "tool". Point a real nanobot gateway at it, put the OS's remote-access service in front in test mode (it writes each PIN to a file instead of the screen), pair, then run the protocol checks:
 
 ```bash
-pip install nanobot-ai==0.3.5 websockets
+pip install nanobot-ai==0.3.5 "websockets>=14"
 python dev/stub_llm.py 18080 &
 nanobot gateway --foreground --config dev/gateway-config.json &
-python dev/smoke.py http://127.0.0.1:18765 test-password
+NANOBOREALIS_REMOTE_PORT=18866 NANOBOREALIS_REMOTE_UPSTREAM_PORT=18765 NANOBOREALIS_REMOTE_STATE=/tmp/remote \
+  NANOBOREALIS_REMOTE_TEST_SECRET=test-password NANOBOREALIS_REMOTE_TEST_PIN_FILE=/tmp/pin \
+  python ../system_files/usr/libexec/nanoborealis-remote &
+python dev/pairing_check.py 127.0.0.1:18866 /tmp/pin /tmp/paired.json
+python dev/smoke.py /tmp/paired.json
 ```
 
-`dev/stub_ollama.py` does the same for compute sharing: it acts like Ollama with configurable model speeds, and `dev/compute_smoke.py` checks model fitting, the choose-and-benchmark loop, the relay's guards, and a full chat turn from nanobot through the relay (see its docstring for the setup).
+`dev/pairing_check.py` pairs and checks what pairing turns away: wrong PINs, unknown devices, other certificates, floods. For pairing alone, `dev/stub_gateway.py` stands in for the gateway. `dev/stub_ollama.py` does the same for compute sharing: it acts like Ollama with configurable model speeds, and `dev/compute_smoke.py` checks model fitting, the choose-and-benchmark loop, the relay's guards, and a full chat turn from nanobot through the relay (see its docstring for the setup).
 
-CI runs both on every change to the client.
+CI runs all of them on every change to the client or the remote-access service.
