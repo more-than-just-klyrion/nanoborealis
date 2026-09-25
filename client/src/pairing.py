@@ -88,12 +88,18 @@ class Machine:
             return None
 
 
+NO_CHECK_TIME = 0x200000  # OpenSSL's X509_V_FLAG_NO_CHECK_TIME
+
+
 def pinned_context(certificate_pem: str) -> ssl.SSLContext:
     """TLS that trusts this one certificate and nothing else."""
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False  # addresses change; the certificate is what identifies the computer
     context.verify_mode = ssl.CERT_REQUIRED
+    # Nor do its dates: it's this exact certificate or nothing, and a computer whose clock runs
+    # ahead makes one that looks "not yet valid" to everyone else.
+    context.verify_flags |= NO_CHECK_TIME
     context.load_verify_locations(cadata=certificate_pem)
     return context
 

@@ -33,6 +33,21 @@ for home in /var/home/*; do
     done
 done
 
+# The clock. Installs from installers before September 25, 2026 read the hardware clock as local
+# time and have network time off, so the clock runs hours off (and this computer's TLS
+# certificate looked "not yet valid" to others). Fix that once: read the hardware clock as UTC,
+# set the system clock from it, and turn on network time. The marker leaves any later choice alone.
+clock_marker=/var/lib/nanoborealis/clock-fixed
+if [ ! -e "$clock_marker" ]; then
+    if grep -qx LOCAL /etc/adjtime 2>/dev/null; then
+        timedatectl set-local-rtc 0 --adjust-system-clock && log "the hardware clock is read as UTC now"
+    fi
+    if ! systemctl is-enabled --quiet chronyd.service 2>/dev/null; then
+        systemctl enable --now chronyd.service && log "turned network time on (chronyd)"
+    fi
+    mkdir -p /var/lib/nanoborealis && touch "$clock_marker"
+fi
+
 # Devices approved for compute sharing.
 if [ -d /etc/nanoaurora ] && [ ! -e /etc/nanoborealis ]; then
     mv /etc/nanoaurora /etc/nanoborealis && log "moved /etc/nanoaurora to /etc/nanoborealis"

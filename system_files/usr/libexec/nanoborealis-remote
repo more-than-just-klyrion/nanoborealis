@@ -51,7 +51,7 @@ TEST_OWNER = os.environ.get("NANOBOREALIS_REMOTE_TEST_OWNER", "")
 
 AGENT_USER = "nanobot-agent"
 DEVICE_HEADER = "x-nanoborealis-device"  # carries a paired device's password
-PAIR_SECONDS = 300  # how long a PIN is good for
+PAIR_SECONDS = 600  # how long a PIN is good for: long enough to read it out to someone
 PIN_TRIES = 5  # wrong PINs before a pairing request is dropped
 # Pairing requests accepted from everyone together. A PIN has a million values; these limits keep
 # anyone from trying requests until one happens to produce a PIN they chose.
