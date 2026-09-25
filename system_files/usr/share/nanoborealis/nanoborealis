@@ -369,7 +369,8 @@ if not devices:
     print("No devices are paired yet. Open the NanoBorealis app on your phone or PC and pick this computer.")
 for device_id, d in sorted(devices.items(), key=lambda item: item[1].get("paired", 0)):
     day = lambda t: time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
-    print(f"{device_id}  {d.get('name', '?')}\n          paired {day(d.get('paired', 0))}, "
+    owner = f", approved by {d['owner']} (its terminal runs as {d['owner']})" if d.get("owner") else ""
+    print(f"{device_id}  {d.get('name', '?')}\n          paired {day(d.get('paired', 0))}{owner}, "
           f"last seen {day(d.get('seen', 0))} from {d.get('address', '?')}")
 PY
                 ;;

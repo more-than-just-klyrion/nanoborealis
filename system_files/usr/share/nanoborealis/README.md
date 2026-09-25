@@ -12,7 +12,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 
 - **`nanobot-agent`**, an account that can't log in, owns nothing else, and runs the agent
 - **The agent:** nanobot 0.3.5 in a rootless Podman container that systemd runs through Quadlet. Its WebUI is at `http://127.0.0.1:8765`, behind a password, and in the app menu as **NanoBorealis**
-- **Pairing for your other devices:** the NanoBorealis app on a phone or PC pairs with a 6-digit PIN shown on this screen, then connects over TLS with a long password of its own (`nanoborealis-remote`, port 8766)
+- **Pairing for your other devices:** the NanoBorealis app on a phone or PC pairs with a 6-digit PIN shown on this screen, then connects over TLS with a long password of its own (`nanoborealis-remote`, port 8766). A paired device can chat with the agent and open a terminal here as whoever approved it
 - **Free Nemotron models with automatic fallback:** Ultra 550B, then Super 120B, then Lightning 30B
 - **Skills:** `code-review`, `debugging`, `git-workflow`, `new-project`, `planning`, `simplify`
 - **`/srv/nanoborealis/projects`**, shared by you and the agent, with a shortcut at `~/nanoborealis-projects`
@@ -43,7 +43,7 @@ Re-running is safe: it keeps the agent's OpenRouter key, WebUI password, and mem
 - **Internet access is unrestricted.** The firewall stops the local network, not the internet.
 - **Free providers may log prompts.** Keep personal files and logged-in accounts off this machine.
 - **Secrets aren't encrypted at rest.** Podman keeps them in a file only `nanobot-agent` and root can read.
-- **A paired device is trusted like you.** Anyone who picks up a paired, unlocked phone or PC can chat with your agent. `nanoborealis devices remove <id>` unpairs a lost one. Pairing itself needs the PIN shown on this screen, so it can't happen without someone at this computer.
+- **A paired device is trusted like you.** Anyone who picks up a paired, unlocked phone or PC can chat with your agent, and open a terminal here as the person who approved that device (`sudo` still asks for their password). `nanoborealis devices remove <id>` unpairs a lost one. Pairing itself needs the PIN shown on this screen, so it can't happen without someone at this computer.
 - **A pool trusts its network.** exo has no password, so once a computer joins a pool, anyone on the network can use the pool and pick what it serves, which makes its computers download models. The node runs in its own account and container, away from your files and the agent. Only join on networks you trust, or join with `--private <name>`.
 
 ## Day to day

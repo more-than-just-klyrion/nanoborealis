@@ -27,6 +27,7 @@ import pairing
 import stickmaker
 import updater
 from agent_link import AgentLink, AuthError, LinkError
+from terminal import Terminal, plain
 from version import VERSION
 
 NARROW = 760  # below this width the chat list moves into a drawer
@@ -54,6 +55,15 @@ CHANNEL_NAMES = {
     "testing": ("Testing", "Candidates for the next stable version, a few days early."),
     "dev": ("Development", "Built from every change. Newest features, occasionally broken."),
 }
+# The terminal's key buttons: what a phone keyboard, or a one-line text box, can't send.
+TERMINAL_KEYS = [
+    ("Ctrl+C", "\x03", "Stop what's running"),
+    ("Tab", "\t", "Complete what you've typed"),
+    ("↑", "\x1b[A", "Previous command"),
+    ("↓", "\x1b[B", "Next command"),
+    ("Ctrl+D", "\x04", "End input, or close the shell"),
+    ("Esc", "\x1b", "Escape"),
+]
 SUGGESTIONS = [
     ("Plan a project", "Help me plan a small Python project. Ask me what it should do first."),
     ("Look at my projects", "Look through ~/projects and tell me what is there."),
@@ -177,6 +187,7 @@ class NanoBorealisApp:
         self.machines: dict[str, pairing.Machine] = {}
         self.machine: pairing.Machine | None = None
         self.pairing: pairing.Pairing | None = None
+        self.terminal: Terminal | None = None
         self.chat_id: str | None = None
         self.chats: list[dict[str, Any]] = []
         self.busy = False
@@ -753,6 +764,18 @@ class NanoBorealisApp:
                 ft.IconButton(ft.Icons.LOGOUT_ROUNDED, icon_size=18, tooltip="Disconnect", on_click=on(self.disconnect)),
             ], spacing=6),
         )
+        terminal = ft.Container(
+            padding=ft.Padding.symmetric(horizontal=8),
+            content=ft.Container(
+                border_radius=10, ink=True, padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                on_click=on(self.open_terminal),
+                content=ft.Row([
+                    ft.Icon(ft.Icons.TERMINAL_ROUNDED, size=18, color=ft.Colors.ON_SURFACE_VARIANT),
+                    ft.Text(f"Terminal on {self.machine.name}" if self.machine else "Terminal", size=13,
+                            expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ], spacing=10),
+            ),
+        )
         stick = ft.Container(
             padding=ft.Padding.symmetric(horizontal=8),
             content=ft.Container(
@@ -776,8 +799,8 @@ class NanoBorealisApp:
             ),
         )
         return ft.Column(expand=True, spacing=6,
-                         controls=[*top, *([chat_list] if chat_list else []), ft.Divider(height=1), share, stick,
-                                   updates, bottom])
+                         controls=[*top, *([chat_list] if chat_list else []), ft.Divider(height=1), terminal, share,
+                                   stick, updates, bottom])
 
     def welcome_view(self) -> ft.Control:
         chips = [
@@ -1422,6 +1445,98 @@ class NanoBorealisApp:
         self.page.show_dialog(ft.SnackBar(ft.Text("Copied"), duration=1500))
 
     # -- Install sticks ------------------------------------------------------------
+
+    # -- Terminal --------------------------------------------------------------
+    # A console on the paired computer, as the person who approved this device at its screen
+    # (terminal.py): the app is that computer's remote control, not just the agent's chat.
+
+    async def open_terminal(self) -> None:
+        if self.machine is None:
+            return
+        if self.in_chat_view and self.page.width and self.page.width < NARROW:
+            await self.page.close_drawer()
+        self.terminal_raw = ""
+        self.terminal_output = ft.Text("Connecting...", font_family=MONO, size=12.5, selectable=True)
+        self.terminal_input = ft.TextField(
+            hint_text="Type a command, then Enter", text_style=ft.TextStyle(font_family=MONO, size=13),
+            on_submit=self.terminal_submit, expand=True, dense=True, autofocus=True,
+        )
+        keys = ft.Row(wrap=True, spacing=6, controls=[
+            ft.OutlinedButton(label, tooltip=tip, on_click=on(self.terminal_key, sequence))
+            for label, sequence, tip in TERMINAL_KEYS
+        ])
+        # Everything has to fit in the dialog: Flutter still draws what overflows it, but taps on
+        # that part never arrive.
+        width = min(920, max(300, (self.page.width or 920) - 48))
+        height = min(520, max(160, (self.page.height or 760) - 400))
+        self.terminal_dialog = ft.AlertDialog(
+            modal=True,
+            scrollable=True,
+            title=ft.Row([ft.Icon(ft.Icons.TERMINAL_ROUNDED),
+                          ft.Text(f"Terminal on {self.machine.name}", size=18, weight=ft.FontWeight.W_600,
+                                  expand=True)], spacing=10),
+            content=ft.Container(width=width, content=ft.Column(tight=True, spacing=10, controls=[
+                ft.Container(ft.ListView([self.terminal_output], auto_scroll=True, padding=12), height=height,
+                             bgcolor=ft.Colors.SURFACE_CONTAINER_LOWEST, border_radius=10),
+                ft.Row([self.terminal_input,
+                        ft.IconButton(ft.Icons.PASSWORD_ROUNDED, tooltip="Hide what you type (for passwords)",
+                                      on_click=on(self.toggle_terminal_hidden))], spacing=4),
+                keys,
+            ])),
+            actions=[ft.TextButton("Close", on_click=on(self.close_terminal))],
+        )
+        self.page.show_dialog(self.terminal_dialog)
+        term = Terminal(self.machine, rows=40, cols=120, console=True)
+        try:
+            await term.open()
+        except pairing.PairingError as e:
+            self.terminal_output.value = str(e)
+            self.page.update()
+            return
+        self.terminal = term
+        self.terminal_output.value = ""
+        self.page.update()
+        self.page.run_task(self.pump_terminal, term)
+
+    async def pump_terminal(self, term: Terminal) -> None:
+        while chunk := await term.read():
+            self.terminal_raw = (self.terminal_raw + chunk.decode(errors="replace"))[-200_000:]
+            self.terminal_output.value = plain(self.terminal_raw)
+            self.page.update()
+        if self.terminal is term:
+            self.terminal = None
+            ended = f" with status {term.exit_status}" if term.exit_status is not None else ""
+            self.terminal_output.value = plain(self.terminal_raw) + f"\n[The shell ended{ended}. Open the terminal again for a new one.]"
+            self.page.update()
+
+    async def terminal_submit(self, _event=None) -> None:
+        text = self.terminal_input.value or ""
+        self.terminal_input.value = ""
+        self.terminal_input.password = False
+        self.page.update()
+        if self.terminal is not None:
+            await self.terminal.send(text + "\r")
+        await self.terminal_input.focus()
+
+    async def terminal_key(self, sequence: str) -> None:
+        if self.terminal is None:
+            return
+        typed = self.terminal_input.value or ""  # e.g. Tab completes what's been typed so far
+        self.terminal_input.value = ""
+        self.page.update()
+        await self.terminal.send(typed + sequence)
+        await self.terminal_input.focus()
+
+    async def toggle_terminal_hidden(self) -> None:
+        self.terminal_input.password = not self.terminal_input.password
+        self.page.update()
+        await self.terminal_input.focus()
+
+    async def close_terminal(self) -> None:
+        term, self.terminal = self.terminal, None
+        if term is not None:
+            term.close()
+        self.page.pop_dialog()
 
     async def open_stick_dialog(self) -> None:
         if self.in_chat_view and self.page.width and self.page.width < NARROW:

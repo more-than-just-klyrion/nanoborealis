@@ -14,8 +14,11 @@ long random password for the device and sends it over the encrypted connection. 
 with this computer's certificate, and presents it on every connection; only a hash of it is kept
 here, in /var/lib/nanoborealis/remote/devices.json.
 
-Only paired devices get through to the agent. `nanoborealis devices` lists and removes them, and
-`nanoborealis remote off` stops this service.
+Only paired devices get through to the agent. A paired device can also open a terminal on this
+computer, or run a command, as the person who approved it here (whoever was at the screen that
+showed the PIN), never as root: the NanoBorealis app is this computer's remote control. The PIN
+notification says so. `nanoborealis devices` lists and removes devices, and `nanoborealis remote
+off` stops this service.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ import socket
 import ssl
 import subprocess
 import time
+import urllib.parse
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,13 +43,15 @@ PORT = int(os.environ.get("NANOBOREALIS_REMOTE_PORT", "8766"))
 UPSTREAM_HOST = os.environ.get("NANOBOREALIS_REMOTE_UPSTREAM_HOST", "127.0.0.1")
 UPSTREAM_PORT = int(os.environ.get("NANOBOREALIS_REMOTE_UPSTREAM_PORT", "8765"))
 STATE = Path(os.environ.get("NANOBOREALIS_REMOTE_STATE", "/var/lib/nanoborealis/remote"))
-# For tests only: the WebUI password to use, and a file to write each PIN to instead of the screen.
+# For tests only: the WebUI password to use, a file to write each PIN to instead of the screen,
+# and the account that stands for the person at the screen.
 TEST_SECRET = os.environ.get("NANOBOREALIS_REMOTE_TEST_SECRET")
 TEST_PIN_FILE = os.environ.get("NANOBOREALIS_REMOTE_TEST_PIN_FILE")
+TEST_OWNER = os.environ.get("NANOBOREALIS_REMOTE_TEST_OWNER", "")
 
 AGENT_USER = "nanobot-agent"
 DEVICE_HEADER = "x-nanoborealis-device"  # carries a paired device's password
-PAIR_SECONDS = 180  # how long a PIN is good for
+PAIR_SECONDS = 300  # how long a PIN is good for
 PIN_TRIES = 5  # wrong PINs before a pairing request is dropped
 # Pairing requests accepted from everyone together. A PIN has a million values; these limits keep
 # anyone from trying requests until one happens to produce a PIN they chose.
@@ -131,14 +137,14 @@ class Devices:
         self.load()
         return self.by_hash.get(hashlib.sha256(password.encode()).hexdigest())
 
-    def add(self, name: str, address: str) -> tuple[str, str]:
+    def add(self, name: str, address: str, owner: str) -> tuple[str, str]:
         self.load()
         device_id = secrets.token_hex(4)
         password = secrets.token_urlsafe(32)  # 256 random bits
         digest = hashlib.sha256(password.encode()).hexdigest()
         now = int(time.time())
         self.by_id[device_id] = {"name": name, "password_sha256": digest, "paired": now, "seen": now,
-                                 "address": address}
+                                 "address": address, "owner": owner}
         self.by_hash[digest] = device_id
         self.save()
         return device_id, password
@@ -234,15 +240,16 @@ def gvariant_string(text: str) -> str:
     return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def show_pin(pin: str, device: str) -> bool:
-    """Put the PIN on this computer's screen, as a notification that stays until it's dismissed."""
+def show_pin(pin: str, device: str) -> list[str]:
+    """Put the PIN on this computer's screen, as a notification that stays until it's dismissed.
+    Returns who it was shown to."""
     if TEST_PIN_FILE:
         Path(TEST_PIN_FILE).write_text(pin)
-        return True
+        return [TEST_OWNER]
     title = f"Pairing PIN: {pin[:3]} {pin[3:]}"
-    body = (f"To let {device} connect to this computer, type this PIN into the NanoBorealis app. "
-            "If you didn't start this, ignore it.")
-    shown = False
+    body = (f"To let {device} use your agent and a terminal on this computer as you, type this PIN into "
+            "the NanoBorealis app. If you didn't start this, ignore it.")
+    shown = []
     for name, uid in people_at_screen():
         bus = f"/run/user/{uid}/bus"
         if not os.path.exists(bus):
@@ -256,7 +263,7 @@ def show_pin(pin: str, device: str) -> bool:
              "{'urgency': <byte 2>, 'desktop-entry': <'nanoborealis'>}", f"int32 {PAIR_SECONDS * 1000}"],
             capture_output=True, text=True, timeout=15, cwd="/")
         if result.returncode == 0:
-            shown = True
+            shown.append(name)
         else:
             log(f"couldn't show the PIN to {name}: {result.stderr.strip()[:200]}")
     return shown
@@ -282,6 +289,7 @@ class Request:
     expires: float
     pin: str | None = None
     tries: int = 0
+    owner: str = ""  # who saw the PIN: the account a terminal runs as
 
 
 pending: dict[str, Request] = {}
@@ -327,10 +335,12 @@ async def pair_reveal(data: dict, address: str) -> tuple[int, dict]:
         pending.pop(str(data.get("request")), None)
         return 400, {"error": "That doesn't match the pairing request."}
     request.pin = pairing_pin(client_nonce, request.server_nonce, CERT_DER)
-    if not await asyncio.to_thread(show_pin, request.pin, request.device):
+    shown = await asyncio.to_thread(show_pin, request.pin, request.device)
+    if not shown:
         pending.pop(str(data.get("request")), None)
         return 409, {"error": f"Nobody is signed in on {MACHINE} to see the PIN. Sign in there, then try again."}
-    log(f"showed a pairing PIN for {request.device} ({address})")
+    request.owner = shown[0]
+    log(f"showed a pairing PIN for {request.device} ({address}) to {', '.join(shown)}")
     return 200, {"ok": True}
 
 
@@ -348,9 +358,141 @@ async def pair_finish(data: dict, address: str) -> tuple[int, dict]:
             return 403, {"error": "Wrong PIN too many times. Start again.", "tries_left": 0}
         return 403, {"error": "Wrong PIN.", "tries_left": left}
     del pending[key]
-    device_id, password = devices.add(request.device, address)
-    log(f"paired {request.device} ({address}) as device {device_id}")
+    device_id, password = devices.add(request.device, address, request.owner)
+    log(f"paired {request.device} ({address}) as device {device_id}, approved by {request.owner or 'nobody'}")
     return 200, {"device_id": device_id, "password": password, "machine": MACHINE}
+
+
+# -- A terminal, and commands, as the person who approved the device -----------------------------
+
+COMMAND_TIMEOUT_MAX = 600
+OUTPUT_LIMIT = 1 << 20  # the end of a command's output that its answer carries
+
+
+def owner_of(device_id: str) -> str | None:
+    """The account a device's terminal runs as: whoever approved it at this screen. Never root."""
+    name = str(devices.by_id.get(device_id, {}).get("owner") or "")
+    try:
+        import pwd
+        return name if name and pwd.getpwnam(name).pw_uid != 0 else None
+    except (ImportError, KeyError):
+        return None
+
+
+def frame(kind: bytes, payload: bytes) -> bytes:
+    """Terminal traffic, both ways: a kind (d data, r resize "rows cols", x exit status), a 4-byte
+    length, then that many bytes."""
+    return kind + len(payload).to_bytes(4, "big") + payload
+
+
+def clamp(value: object, default: int, top: int) -> int:
+    try:
+        return max(4, min(int(str(value)), top))
+    except ValueError:
+        return default
+
+
+async def run_command(data: dict, owner: str) -> tuple[int, dict]:
+    """Run one shell command as the owner, in a login shell, and answer with its output."""
+    import signal
+    command = data.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return 400, {"error": "No command."}
+    timeout = clamp(data.get("timeout") or 120, 120, COMMAND_TIMEOUT_MAX)
+    process = await asyncio.create_subprocess_exec(
+        "runuser", "-l", owner, "-c", command, stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd="/", start_new_session=True)
+    timed_out = False
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), timeout)
+    except asyncio.TimeoutError:
+        timed_out = True
+        os.killpg(process.pid, signal.SIGKILL)
+        output, _ = await process.communicate()
+    return 200, {"exit": None if timed_out else process.returncode, "timed_out": timed_out,
+                 "output": output[-OUTPUT_LIMIT:].decode(errors="replace")}
+
+
+async def open_terminal(target: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, owner: str,
+                        device_id: str, address: str) -> None:
+    """A login shell as the owner in a pseudo-terminal, carried over this connection in frames."""
+    import fcntl
+    import signal
+    import struct
+    import termios
+    query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(target).query))
+    master, slave = os.openpty()
+
+    def resize(rows: object, cols: object) -> None:
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", clamp(rows, 24, 500), clamp(cols, 80, 1000), 0, 0))
+
+    resize(query.get("rows"), query.get("cols"))
+    environment = {"TERM": "xterm-256color", "LANG": os.environ.get("LANG") or "C.UTF-8",
+                   "PATH": "/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin"}
+    if query.get("mode") == "console":  # the app's line-by-line console: no pagers, colors or cursor games
+        environment.update(TERM="dumb", PAGER="cat", SYSTEMD_PAGER="cat", GIT_PAGER="cat", NO_COLOR="1",
+                           SYSTEMD_COLORS="0")
+    # setsid --ctty makes the terminal the session's controlling terminal, so job control and
+    # Ctrl+C work as they do at the computer.
+    process = subprocess.Popen(["setsid", "--ctty", "runuser", "-l", owner], stdin=slave, stdout=slave,
+                               stderr=slave, env=environment, cwd="/", close_fds=True)
+    os.close(slave)
+    writer.write(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: nanoborealis-terminal\r\nConnection: Upgrade\r\n\r\n")
+    await writer.drain()
+    log(f"terminal opened for device {device_id} ({address}) as {owner}")
+    loop = asyncio.get_running_loop()
+    output: asyncio.Queue[bytes] = asyncio.Queue()
+
+    def readable() -> None:
+        try:
+            data = os.read(master, 65536)
+        except OSError:  # EIO: the shell has ended
+            data = b""
+        if not data:
+            loop.remove_reader(master)
+        output.put_nowait(data)
+
+    loop.add_reader(master, readable)
+
+    async def to_device() -> None:
+        while data := await output.get():
+            writer.write(frame(b"d", data))
+            await writer.drain()
+
+    async def from_device() -> None:
+        while True:
+            head = await reader.readexactly(5)
+            kind, length = head[:1], int.from_bytes(head[1:], "big")
+            if length > 1 << 20:
+                return
+            payload = await reader.readexactly(length)
+            if kind == b"d":
+                view = memoryview(payload)
+                while view:
+                    view = view[os.write(master, view):]
+            elif kind == b"r":
+                rows, _, cols = payload.decode(errors="replace").partition(" ")
+                resize(rows, cols)
+
+    sending, receiving = asyncio.create_task(to_device()), asyncio.create_task(from_device())
+    try:
+        done, _ = await asyncio.wait({sending, receiving}, return_when=asyncio.FIRST_COMPLETED)
+        if sending in done and not sending.exception():  # the shell ended by itself
+            code = await asyncio.to_thread(process.wait)
+            writer.write(frame(b"x", str(code).encode()))
+            await writer.drain()
+    except (ConnectionError, ssl.SSLError, OSError):
+        pass
+    finally:
+        sending.cancel()
+        receiving.cancel()
+        loop.remove_reader(master)
+        os.close(master)  # hangs the terminal up: what still runs in it gets SIGHUP
+        try:
+            await asyncio.wait_for(asyncio.to_thread(process.wait), 5)
+        except asyncio.TimeoutError:
+            os.killpg(process.pid, signal.SIGKILL)
+        log(f"terminal closed for device {device_id}")
 
 
 # -- HTTP ---------------------------------------------------------------------------------------
@@ -388,14 +530,30 @@ def parse_head(raw: bytes) -> tuple[str, str, str, list[tuple[str, str]]]:
     return parts[0], parts[1], parts[2], headers
 
 
-async def local(method: str, path: str, headers: list[tuple[str, str]], reader: asyncio.StreamReader,
+async def local(method: str, target: str, headers: list[tuple[str, str]], reader: asyncio.StreamReader,
                 writer: asyncio.StreamWriter, address: str) -> None:
-    """This service's own endpoints: pairing, and unpairing a device."""
+    """This service's own endpoints: pairing, unpairing, and a paired device's terminal and commands."""
+    path = target.split("?", 1)[0]
     if method == "GET" and path == "/nanoborealis/hello":
-        return await reply(writer, 200, {"service": "nanoborealis-remote", "pairing": 1, "machine": MACHINE})
+        return await reply(writer, 200, {"service": "nanoborealis-remote", "pairing": 1, "terminal": 1,
+                                         "machine": MACHINE})
+    owner = None
+    if path in ("/nanoborealis/terminal", "/nanoborealis/command"):
+        device_id = devices.find(header(headers, DEVICE_HEADER))
+        if device_id is None:
+            return await reply(writer, 401, {"error": "This device isn't paired with this computer."})
+        owner = owner_of(device_id)
+        if owner is None:
+            return await reply(writer, 403, {"error": "Pair this device again to use a terminal: it was paired "
+                                                      "before terminals, or with nobody at this computer's screen."})
+        devices.seen(device_id, address)
+        if path == "/nanoborealis/terminal":
+            if method != "GET" or header(headers, "upgrade").lower() != "nanoborealis-terminal":
+                return await reply(writer, 400, {"error": "Bad request."})
+            return await open_terminal(target, reader, writer, owner, device_id, address)
     routes = {"/nanoborealis/pair/start": pair_start, "/nanoborealis/pair/reveal": pair_reveal,
               "/nanoborealis/pair/finish": pair_finish}
-    if method != "POST" or (path not in routes and path != "/nanoborealis/unpair"):
+    if method != "POST" or (path not in routes and path not in ("/nanoborealis/unpair", "/nanoborealis/command")):
         return await reply(writer, 404, {"error": "Not found."})
     try:
         length = int(header(headers, "content-length") or 0)
@@ -406,6 +564,9 @@ async def local(method: str, path: str, headers: list[tuple[str, str]], reader: 
             raise ValueError("not an object")
     except (ValueError, asyncio.TimeoutError, asyncio.IncompleteReadError):
         return await reply(writer, 400, {"error": "Bad request."})
+    if path == "/nanoborealis/command" and owner is not None:
+        status, payload = await run_command(data, owner)
+        return await reply(writer, status, payload)
     if path == "/nanoborealis/unpair":
         device_id = devices.find(header(headers, DEVICE_HEADER))
         if device_id is None:
@@ -490,7 +651,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             return
         path = target.split("?", 1)[0]
         if path.startswith("/nanoborealis/"):
-            return await local(method, path, headers, reader, writer, address)
+            return await local(method, target, headers, reader, writer, address)
         device_id = devices.find(header(headers, DEVICE_HEADER))
         if device_id is None:
             return await reply(writer, 401, {"error": "This device isn't paired with this computer. "

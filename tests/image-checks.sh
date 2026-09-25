@@ -45,7 +45,7 @@ expect "remote-access service compiles" python3 -c 'import ast, sys; ast.parse(o
 expect "remote access is on by default" systemctl is-enabled nanoborealis-remote.service
 expect "Avahi announces the pairing port" grep -q '<port>8766</port>' /etc/avahi/services/nanoborealis.service
 expect "Avahi is enabled" systemctl is-enabled avahi-daemon.service
-for tool in openssl runuser loginctl gdbus; do
+for tool in openssl runuser setsid loginctl gdbus; do
     expect "$tool is present (pairing needs it)" command -v "$tool"
 done
 

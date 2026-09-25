@@ -22,6 +22,12 @@ Pick your NanoBorealis computer in the app. The app finds computers on your netw
 
 On the computer, `nanoborealis devices` lists paired devices and `nanoborealis devices remove <id>` unpairs one. **Forget this computer** on the app's sign-in screen unpairs from the app side. Remote access is on by default; `nanoborealis remote off` turns it off, and `remote on` turns it back on.
 
+## A terminal on the computer
+
+**Terminal on …** in the sidebar opens a console on the paired computer, over the same encrypted connection. It runs as the person who approved this device at the computer's screen (never as root), so `sudo` asks for that person's password. Type a command and press Enter. The buttons send what a text box can't: Ctrl+C stops what's running, Tab completes what you've typed, the arrows step through earlier commands. The key button hides what you type, for passwords. It's a line-by-line console: full-screen programs such as `top` or `nano` need a real terminal.
+
+The PIN notification says that pairing allows this, so only approve devices you'd hand your keyboard to.
+
 ## Make an install stick
 
 **Make an install stick** (on the sign-in screen and in the sidebar) turns a USB stick into a NanoBorealis installer:
